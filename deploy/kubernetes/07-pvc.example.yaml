@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: morpheus-csi-test
+  namespace: default
+  labels:
+    app.kubernetes.io/name: morpheus-csi
+    app.kubernetes.io/component: example
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: morpheus-storage
+  resources:
+    requests:
+      storage: 10Gi

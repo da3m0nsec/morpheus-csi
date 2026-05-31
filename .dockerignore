@@ -1,0 +1,6 @@
+.git
+deploy
+docs
+Dockerfile
+README.md
+*.md

@@ -1,0 +1,24 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: morpheus-storage
+  labels:
+    app.kubernetes.io/name: morpheus-csi
+    app.kubernetes.io/component: example
+provisioner: csi.morpheusdata.com
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: false
+parameters:
+  morpheus.storageServerId: "12"
+  morpheus.storageVolumeTypeId: "4"
+  morpheus.storageGroup: default
+  csi.storage.k8s.io/fstype: ext4
+  csi.storage.k8s.io/provisioner-secret-name: morpheus-csi-credentials
+  csi.storage.k8s.io/provisioner-secret-namespace: kube-system
+  csi.storage.k8s.io/controller-publish-secret-name: morpheus-csi-credentials
+  csi.storage.k8s.io/controller-publish-secret-namespace: kube-system
+  csi.storage.k8s.io/node-stage-secret-name: morpheus-csi-credentials
+  csi.storage.k8s.io/node-stage-secret-namespace: kube-system
+  csi.storage.k8s.io/node-publish-secret-name: morpheus-csi-credentials
+  csi.storage.k8s.io/node-publish-secret-namespace: kube-system
