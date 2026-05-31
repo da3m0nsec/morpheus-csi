@@ -17,3 +17,10 @@ go test ./...
 go build ./cmd/morpheus-csi
 docker build -t ghcr.io/da3m0nsec/morpheus-csi:dev .
 ```
+
+## Deploy
+
+```sh
+kubectl apply -f deploy/kubernetes/
+kubectl -n morpheus-csi get pods
+```

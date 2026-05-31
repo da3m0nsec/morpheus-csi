@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: morpheus-csi-node
-  namespace: kube-system
+  namespace: morpheus-csi
   labels:
     app.kubernetes.io/name: morpheus-csi
     app.kubernetes.io/component: node

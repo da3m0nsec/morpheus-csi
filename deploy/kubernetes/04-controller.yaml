@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: morpheus-csi-controller
-  namespace: kube-system
+  namespace: morpheus-csi
   labels:
     app.kubernetes.io/name: morpheus-csi
     app.kubernetes.io/component: controller

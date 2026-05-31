@@ -16,7 +16,7 @@ import (
 func TestCreateVolumeEnsuresInstanceVolume(t *testing.T) {
 	fake := &fakeMorpheus{
 		volume: &morpheus.StorageVolume{
-			ID:      "42",
+			ID:      "test-volume-never-real",
 			Name:    "pvc-123",
 			SizeGiB: 10,
 		},
@@ -27,7 +27,7 @@ func TestCreateVolumeEnsuresInstanceVolume(t *testing.T) {
 		Name:          "pvc-123",
 		CapacityRange: &csi.CapacityRange{RequiredBytes: 10 * gibibyte},
 		Parameters: map[string]string{
-			morpheus.ParamInstanceID:    "instance-7",
+			morpheus.ParamInstanceID:    "test-instance-never-real",
 			"csi.storage.k8s.io/fstype": "ext4",
 		},
 		VolumeCapabilities: []*csi.VolumeCapability{mountCapability()},
@@ -35,8 +35,8 @@ func TestCreateVolumeEnsuresInstanceVolume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateVolume returned error: %v", err)
 	}
-	if resp.GetVolume().GetVolumeId() != "instance-7:42" {
-		t.Fatalf("expected encoded volume id instance-7:42, got %q", resp.GetVolume().GetVolumeId())
+	if resp.GetVolume().GetVolumeId() != "test-instance-never-real:test-volume-never-real" {
+		t.Fatalf("expected encoded volume id test-instance-never-real:test-volume-never-real, got %q", resp.GetVolume().GetVolumeId())
 	}
 	if fake.ensureRequest.SizeGiB != 10 {
 		t.Fatalf("expected size 10GiB, got %dGiB", fake.ensureRequest.SizeGiB)
@@ -64,11 +64,11 @@ func TestDeleteVolumeParsesInstanceVolumeID(t *testing.T) {
 	fake := &fakeMorpheus{}
 	driver := NewWithDependencies(config.Default(), log.Default(), fake, fake, &fakeMounter{})
 
-	_, err := driver.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: "instance-7:42"})
+	_, err := driver.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: "test-instance-never-real:test-volume-never-real"})
 	if err != nil {
 		t.Fatalf("DeleteVolume returned error: %v", err)
 	}
-	if fake.deletedRef != (morpheus.VolumeRef{InstanceID: "instance-7", VolumeID: "42"}) {
+	if fake.deletedRef != (morpheus.VolumeRef{InstanceID: "test-instance-never-real", VolumeID: "test-volume-never-real"}) {
 		t.Fatalf("unexpected deleted ref: %+v", fake.deletedRef)
 	}
 }
@@ -76,36 +76,36 @@ func TestDeleteVolumeParsesInstanceVolumeID(t *testing.T) {
 func TestControllerPublishReturnsDevicePathFromInstanceVolume(t *testing.T) {
 	fake := &fakeMorpheus{
 		volume: &morpheus.StorageVolume{
-			ID:         "42",
+			ID:         "test-volume-never-real",
 			Name:       "pvc-123",
-			DevicePath: "/dev/disk/by-id/morpheus-42",
+			DevicePath: "/dev/disk/by-id/morpheus-test-volume",
 		},
 	}
 	driver := NewWithDependencies(config.Default(), log.Default(), fake, fake, &fakeMounter{})
 
 	resp, err := driver.ControllerPublishVolume(context.Background(), &csi.ControllerPublishVolumeRequest{
-		VolumeId: "instance-7:42",
+		VolumeId: "test-instance-never-real:test-volume-never-real",
 		NodeId:   "worker-1",
 		VolumeContext: map[string]string{
-			morpheus.VolumeContextInstanceID: "instance-7",
+			morpheus.VolumeContextInstanceID: "test-instance-never-real",
 		},
 	})
 	if err != nil {
 		t.Fatalf("ControllerPublishVolume returned error: %v", err)
 	}
-	if got := resp.GetPublishContext()[morpheus.VolumeContextDevicePath]; got != "/dev/disk/by-id/morpheus-42" {
+	if got := resp.GetPublishContext()[morpheus.VolumeContextDevicePath]; got != "/dev/disk/by-id/morpheus-test-volume" {
 		t.Fatalf("expected device path in publish context, got %q", got)
 	}
 }
 
 func TestControllerExpandVolumeUsesInstanceResize(t *testing.T) {
 	fake := &fakeMorpheus{
-		volume: &morpheus.StorageVolume{ID: "42", Name: "pvc-123", SizeGiB: 20},
+		volume: &morpheus.StorageVolume{ID: "test-volume-never-real", Name: "pvc-123", SizeGiB: 20},
 	}
 	driver := NewWithDependencies(config.Default(), log.Default(), fake, fake, &fakeMounter{})
 
 	resp, err := driver.ControllerExpandVolume(context.Background(), &csi.ControllerExpandVolumeRequest{
-		VolumeId:         "instance-7:42",
+		VolumeId:         "test-instance-never-real:test-volume-never-real",
 		CapacityRange:    &csi.CapacityRange{RequiredBytes: 20 * gibibyte},
 		VolumeCapability: mountCapability(),
 	})
@@ -115,7 +115,7 @@ func TestControllerExpandVolumeUsesInstanceResize(t *testing.T) {
 	if !resp.GetNodeExpansionRequired() {
 		t.Fatal("expected node expansion to be required")
 	}
-	if fake.expandRequest.VolumeID != "42" || fake.expandRequest.StorageClass[morpheus.ParamInstanceID] != "instance-7" {
+	if fake.expandRequest.VolumeID != "test-volume-never-real" || fake.expandRequest.StorageClass[morpheus.ParamInstanceID] != "test-instance-never-real" {
 		t.Fatalf("unexpected expand request: %+v", fake.expandRequest)
 	}
 }
@@ -124,7 +124,7 @@ func TestNodeStageRequiresDevicePath(t *testing.T) {
 	driver := NewWithDependencies(config.Config{NodeID: "worker-1"}, log.Default(), nil, nil, &fakeMounter{})
 
 	_, err := driver.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
-		VolumeId:          "instance-7:42",
+		VolumeId:          "test-instance-never-real:test-volume-never-real",
 		StagingTargetPath: "/var/lib/kubelet/plugins/kubernetes.io/csi/pv/42/globalmount",
 		VolumeCapability:  mountCapability(),
 	})
@@ -138,7 +138,7 @@ func TestNodeExpandVolumeCallsMounter(t *testing.T) {
 	driver := NewWithDependencies(config.Config{NodeID: "worker-1"}, log.Default(), nil, nil, mounter)
 
 	_, err := driver.NodeExpandVolume(context.Background(), &csi.NodeExpandVolumeRequest{
-		VolumeId:         "instance-7:42",
+		VolumeId:         "test-instance-never-real:test-volume-never-real",
 		VolumePath:       "/var/lib/kubelet/pods/pod/volumes/kubernetes.io~csi/pv/mount",
 		CapacityRange:    &csi.CapacityRange{RequiredBytes: 20 * gibibyte},
 		VolumeCapability: mountCapability(),

@@ -15,11 +15,11 @@ func TestEnsureVolumeReturnsExistingCompatibleVolume(t *testing.T) {
 			t.Fatalf("expected bearer token auth header, got %q", r.Header.Get("Authorization"))
 		}
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/instances/7":
+		case r.Method == http.MethodGet && r.URL.Path == "/api/instances/test-instance-never-real":
 			_ = json.NewEncoder(w).Encode(instanceResponse([]map[string]any{
-				{"id": 42, "name": "pvc-123", "sizeGiB": 10, "rootVolume": false},
+				{"id": "test-volume-never-real", "name": "pvc-123", "sizeGiB": 10, "rootVolume": false},
 			}))
-		case r.Method == http.MethodPut && r.URL.Path == "/api/instances/7/resize":
+		case r.Method == http.MethodPut && r.URL.Path == "/api/instances/test-instance-never-real/resize":
 			resizeCalled = true
 			w.WriteHeader(http.StatusOK)
 		default:
@@ -36,14 +36,14 @@ func TestEnsureVolumeReturnsExistingCompatibleVolume(t *testing.T) {
 		Name:    "pvc-123",
 		SizeGiB: 10,
 		StorageClass: map[string]string{
-			ParamInstanceID: "7",
+			ParamInstanceID: "test-instance-never-real",
 		},
 	})
 	if err != nil {
 		t.Fatalf("EnsureVolume returned error: %v", err)
 	}
-	if volume.ID != "42" {
-		t.Fatalf("expected existing volume id 42, got %q", volume.ID)
+	if volume.ID != "test-volume-never-real" {
+		t.Fatalf("expected existing sentinel volume id, got %q", volume.ID)
 	}
 	if resizeCalled {
 		t.Fatal("EnsureVolume should not resize when a compatible volume already exists")
@@ -55,19 +55,19 @@ func TestEnsureVolumeAddsMissingVolumeViaResize(t *testing.T) {
 	gets := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/instances/7":
+		case r.Method == http.MethodGet && r.URL.Path == "/api/instances/test-instance-never-real":
 			gets++
 			if gets == 1 {
 				_ = json.NewEncoder(w).Encode(instanceResponse([]map[string]any{
-					{"id": 1, "name": "root", "sizeGiB": 20, "rootVolume": true},
+					{"id": "test-root-volume-never-real", "name": "root", "sizeGiB": 20, "rootVolume": true},
 				}))
 				return
 			}
 			_ = json.NewEncoder(w).Encode(instanceResponse([]map[string]any{
-				{"id": 1, "name": "root", "sizeGiB": 20, "rootVolume": true},
-				{"id": 42, "name": "pvc-123", "sizeGiB": 10, "rootVolume": false},
+				{"id": "test-root-volume-never-real", "name": "root", "sizeGiB": 20, "rootVolume": true},
+				{"id": "test-volume-never-real", "name": "pvc-123", "sizeGiB": 10, "rootVolume": false},
 			}))
-		case r.Method == http.MethodPut && r.URL.Path == "/api/instances/7/resize":
+		case r.Method == http.MethodPut && r.URL.Path == "/api/instances/test-instance-never-real/resize":
 			if err := json.NewDecoder(r.Body).Decode(&resizePayload); err != nil {
 				t.Fatalf("decode resize payload: %v", err)
 			}
@@ -85,15 +85,15 @@ func TestEnsureVolumeAddsMissingVolumeViaResize(t *testing.T) {
 		Name:    "pvc-123",
 		SizeGiB: 10,
 		StorageClass: map[string]string{
-			ParamInstanceID:    "7",
+			ParamInstanceID:    "test-instance-never-real",
 			ParamStorageTypeID: "5",
 		},
 	})
 	if err != nil {
 		t.Fatalf("EnsureVolume returned error: %v", err)
 	}
-	if volume.ID != "42" {
-		t.Fatalf("expected new volume id 42, got %q", volume.ID)
+	if volume.ID != "test-volume-never-real" {
+		t.Fatalf("expected new sentinel volume id, got %q", volume.ID)
 	}
 	volumes := resizePayload["instance"].(map[string]any)["volumes"].([]any)
 	if len(volumes) != 2 {
@@ -105,12 +105,12 @@ func TestDeleteVolumeRemovesNonRootVolumeViaResize(t *testing.T) {
 	var resizePayload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/instances/7":
+		case r.Method == http.MethodGet && r.URL.Path == "/api/instances/test-instance-never-real":
 			_ = json.NewEncoder(w).Encode(instanceResponse([]map[string]any{
-				{"id": 1, "name": "root", "sizeGiB": 20, "rootVolume": true},
-				{"id": 42, "name": "pvc-123", "sizeGiB": 10, "rootVolume": false},
+				{"id": "test-root-volume-never-real", "name": "root", "sizeGiB": 20, "rootVolume": true},
+				{"id": "test-volume-never-real", "name": "pvc-123", "sizeGiB": 10, "rootVolume": false},
 			}))
-		case r.Method == http.MethodPut && r.URL.Path == "/api/instances/7/resize":
+		case r.Method == http.MethodPut && r.URL.Path == "/api/instances/test-instance-never-real/resize":
 			if err := json.NewDecoder(r.Body).Decode(&resizePayload); err != nil {
 				t.Fatalf("decode resize payload: %v", err)
 			}
@@ -124,7 +124,7 @@ func TestDeleteVolumeRemovesNonRootVolumeViaResize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient returned error: %v", err)
 	}
-	if err := client.DeleteVolume(context.Background(), VolumeRef{InstanceID: "7", VolumeID: "42"}); err != nil {
+	if err := client.DeleteVolume(context.Background(), VolumeRef{InstanceID: "test-instance-never-real", VolumeID: "test-volume-never-real"}); err != nil {
 		t.Fatalf("DeleteVolume returned error: %v", err)
 	}
 	volumes := resizePayload["instance"].(map[string]any)["volumes"].([]any)
@@ -135,11 +135,11 @@ func TestDeleteVolumeRemovesNonRootVolumeViaResize(t *testing.T) {
 
 func TestExpandVolumeRejectsShrink(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/instances/7" {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/instances/test-instance-never-real" {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
 		_ = json.NewEncoder(w).Encode(instanceResponse([]map[string]any{
-			{"id": 42, "name": "pvc-123", "sizeGiB": 20, "rootVolume": false},
+			{"id": "test-volume-never-real", "name": "pvc-123", "sizeGiB": 20, "rootVolume": false},
 		}))
 	}))
 	defer server.Close()
@@ -149,10 +149,10 @@ func TestExpandVolumeRejectsShrink(t *testing.T) {
 		t.Fatalf("NewClient returned error: %v", err)
 	}
 	_, err = client.ExpandVolume(context.Background(), ResizeVolumeRequest{
-		VolumeID: "42",
+		VolumeID: "test-volume-never-real",
 		SizeGiB:  10,
 		StorageClass: map[string]string{
-			ParamInstanceID: "7",
+			ParamInstanceID: "test-instance-never-real",
 		},
 	})
 	if err == nil {
@@ -163,7 +163,7 @@ func TestExpandVolumeRejectsShrink(t *testing.T) {
 func instanceResponse(volumes []map[string]any) map[string]any {
 	return map[string]any{
 		"instance": map[string]any{
-			"id":      7,
+			"id":      "test-instance-never-real",
 			"volumes": volumes,
 		},
 	}

@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: morpheus-csi-node
-  namespace: kube-system
+  namespace: morpheus-csi
   labels:
     app.kubernetes.io/name: morpheus-csi
     app.kubernetes.io/component: node
@@ -36,4 +36,4 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: morpheus-csi-node
-    namespace: kube-system
+    namespace: morpheus-csi
