@@ -75,9 +75,10 @@ Initial `StorageClass` parameter ideas, pending API confirmation:
 
 ```yaml
 parameters:
-  morpheus.storageServerId: "12"
-  morpheus.storageVolumeTypeId: "4"
-  morpheus.storageGroup: "default"
+  morpheus.instanceId: "12"
+  morpheus.storageTypeId: "4"
+  morpheus.datastoreId: "5"
+  morpheus.deleteOriginalVolumes: "false"
   csi.storage.k8s.io/fstype: ext4
   csi.storage.k8s.io/provisioner-secret-name: morpheus-csi-credentials
   csi.storage.k8s.io/provisioner-secret-namespace: kube-system
@@ -91,7 +92,6 @@ parameters:
 
 - Snapshots and restore.
 - Volume cloning.
-- Online/offline volume expansion.
 - Raw block volumes.
 - Windows node support.
 - Advanced topology-aware provisioning.
@@ -113,10 +113,10 @@ parameters:
 
 ## Open Questions Before Implementation
 
-- Which Morpheus storage server and storage volume type will be supported first?
+- Which Morpheus instance, storage type, and datastore will be supported first?
 - Which transport reaches the node: iSCSI, NFS, vSphere disk, cloud disk, or another Morpheus abstraction?
-- Does the first target backend require `PUT /api/servers/{id}/volumes/{volumeId}/attach`, or can nodes mount directly from returned connection data?
-- How do Kubernetes node names map to Morpheus servers, instances, or cloud resources?
+- Does `PUT /api/instances/{id}/resize` return enough volume/device metadata for the node to mount directly?
+- How do Kubernetes node names map to Morpheus instances after the first manual-instance test?
 - What minimum Kubernetes version do we target?
 - What Morpheus version do we target first?
 

@@ -15,7 +15,30 @@ Sources:
 - <https://apidocs.morpheusdata.com/reference/listclustervolumes>
 - <https://apidocs.morpheusdata.com/reference/deleteclustervolume>
 
-## Primary Candidate: Storage Volumes
+## Primary Candidate: Instance Resize
+
+The first implementation uses instance resize as the primary storage operation:
+
+```http
+GET /api/instances/{id}?details=true
+PUT /api/instances/{id}/resize
+```
+
+The Kubernetes `StorageClass` carries the manually selected Morpheus instance ID for the first single-node test. The driver reads the current instance volumes, appends or grows a non-root data volume named after the PVC, and sends the full volume list back through resize.
+
+Likely CSI `StorageClass` parameters:
+
+```yaml
+parameters:
+  morpheus.instanceId: "12"
+  morpheus.storageTypeId: "4"
+  morpheus.datastoreId: "5"
+  morpheus.deleteOriginalVolumes: "false"
+```
+
+CSI `VolumeId` is encoded as `<instanceID>:<volumeID>` so later delete, publish, and expand calls can operate only on the instance that originally received the volume.
+
+## Earlier Candidate: Storage Volumes
 
 The Morpheus API family that most closely maps to CSI dynamic provisioning is `StorageApi`, especially `storage-volumes`.
 
@@ -191,30 +214,22 @@ GET    /api/clusters/{clusterId}/volumeclaims/{id}
 
 These look like Morpheus views of Kubernetes cluster resources rather than the general storage provisioning API. They may be useful for reconciliation or diagnostics when Morpheus manages the cluster, but they should not be assumed to satisfy CSI `CreateVolume` until we confirm there is a create/update API and that it represents external persistent storage.
 
-## Proposed Morpheus Client Interfaces
+## Implemented Morpheus Client Interfaces
 
 ```go
-type StorageVolumeClient interface {
-    ListStorageVolumes(ctx context.Context, opts ListStorageVolumesOptions) (*StorageVolumeList, error)
-    GetStorageVolume(ctx context.Context, id int64) (*StorageVolume, error)
-    CreateStorageVolume(ctx context.Context, req CreateStorageVolumeRequest) (*StorageVolume, error)
-    DeleteStorageVolume(ctx context.Context, id int64) error
-}
-
-type StorageAttachmentClient interface {
-    AttachStorageVolume(ctx context.Context, serverID int64, volumeID int64, req AttachStorageVolumeRequest) error
-    DetachStorageVolume(ctx context.Context, serverID int64, volumeID int64) error
+type InstanceVolumeClient interface {
+    EnsureVolume(ctx context.Context, req ResizeVolumeRequest) (*StorageVolume, error)
+    DeleteVolume(ctx context.Context, ref VolumeRef) error
+    ExpandVolume(ctx context.Context, req ResizeVolumeRequest) (*StorageVolume, error)
+    GetVolume(ctx context.Context, ref VolumeRef) (*StorageVolume, error)
 }
 
 type StorageDiscoveryClient interface {
-    ListStorageServers(ctx context.Context, opts ListStorageServersOptions) (*StorageServerList, error)
-    GetStorageServer(ctx context.Context, id int64) (*StorageServer, error)
-    ListStorageServerTypes(ctx context.Context, opts ListTypesOptions) (*StorageServerTypeList, error)
-    ListStorageVolumeTypes(ctx context.Context, opts ListTypesOptions) (*StorageVolumeTypeList, error)
+    ValidateStorageClass(ctx context.Context, parameters map[string]string) error
 }
 ```
 
-Keep discovery, volume lifecycle, and attachment separate so the CSI services can depend only on the operations they actually need.
+The first implementation keeps the Morpheus instance ID in `StorageClass` and encodes CSI volume IDs as `<instanceID>:<volumeID>`.
 
 ## StorageClass Draft
 
@@ -226,11 +241,12 @@ metadata:
 provisioner: csi.morpheusdata.com
 reclaimPolicy: Delete
 volumeBindingMode: WaitForFirstConsumer
-allowVolumeExpansion: false
+allowVolumeExpansion: true
 parameters:
-  morpheus.storageServerId: "12"
-  morpheus.storageVolumeTypeId: "4"
-  morpheus.storageGroup: "default"
+  morpheus.instanceId: "12"
+  morpheus.storageTypeId: "4"
+  morpheus.datastoreId: "5"
+  morpheus.deleteOriginalVolumes: "false"
   csi.storage.k8s.io/fstype: ext4
   csi.storage.k8s.io/provisioner-secret-name: morpheus-csi-credentials
   csi.storage.k8s.io/provisioner-secret-namespace: kube-system
@@ -241,12 +257,9 @@ parameters:
 ## Open Items
 
 - Capture actual request and response payloads for:
-  - `POST /api/storage-volumes`
-  - `GET /api/storage-volumes/{id}`
-  - `PUT /api/servers/{id}/volumes/{volumeId}/attach`
-  - `PUT /api/servers/{id}/volumes/{volumeId}/detach`
+  - `GET /api/instances/{id}?details=true`
+  - `PUT /api/instances/{id}/resize`
 - Confirm whether volume size is expressed in bytes, MiB, GiB, or backend-specific units.
 - Confirm which field stores a stable external ID/name usable for CSI idempotency.
-- Confirm whether `DELETE /api/storage-volumes/{id}` is synchronous or asynchronous.
-- Confirm node mapping from Kubernetes nodes to Morpheus server IDs.
-- Confirm the node-side transport and mount behavior for the selected storage backend.
+- Confirm which instance volume field, if any, exposes the node device path after resize.
+- Confirm the future node mapping from Kubernetes nodes to Morpheus instance IDs.

@@ -17,6 +17,7 @@ func (d *Driver) ControllerGetCapabilities(context.Context, *csi.ControllerGetCa
 		Capabilities: []*csi.ControllerServiceCapability{
 			controllerCapability(csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME),
 			controllerCapability(csi.ControllerServiceCapability_RPC_PUBLISH_UNPUBLISH_VOLUME),
+			controllerCapability(csi.ControllerServiceCapability_RPC_EXPAND_VOLUME),
 		},
 	}, nil
 }
@@ -40,7 +41,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	volume, err := d.volumes.CreateStorageVolume(ctx, morpheus.CreateStorageVolumeRequest{
+	volume, err := d.volumes.EnsureVolume(ctx, morpheus.ResizeVolumeRequest{
 		Name:         name,
 		SizeGiB:      sizeGiB,
 		StorageClass: req.GetParameters(),
@@ -50,19 +51,18 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 	}
 
 	context := map[string]string{
-		morpheus.ParamStorageServerID:     volume.ServerID,
-		morpheus.ParamStorageVolumeTypeID: volume.TypeID,
-		"morpheus.volumeName":             volume.Name,
+		morpheus.VolumeContextInstanceID: req.GetParameters()[morpheus.ParamInstanceID],
+		morpheus.VolumeContextVolumeName: volume.Name,
 	}
 	if volume.DevicePath != "" {
-		context["morpheus.devicePath"] = volume.DevicePath
+		context[morpheus.VolumeContextDevicePath] = volume.DevicePath
 	}
 	if fsType := req.GetParameters()["csi.storage.k8s.io/fstype"]; fsType != "" {
 		context["csi.storage.k8s.io/fstype"] = fsType
 	}
 	return &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
-			VolumeId:      volume.ID,
+			VolumeId:      morpheus.EncodeVolumeID(req.GetParameters()[morpheus.ParamInstanceID], volume.ID),
 			CapacityBytes: sizeGiB * gibibyte,
 			VolumeContext: context,
 		},
@@ -73,72 +73,89 @@ func (d *Driver) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest)
 	if d.volumes == nil {
 		return nil, status.Error(codes.Unavailable, "Morpheus controller client is not configured")
 	}
-	volumeID := strings.TrimSpace(req.GetVolumeId())
-	if volumeID == "" {
-		return nil, status.Error(codes.InvalidArgument, "volume id is required")
+	ref, err := morpheus.DecodeVolumeID(req.GetVolumeId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := d.volumes.DeleteStorageVolume(ctx, volumeID); err != nil {
-		return nil, status.Errorf(codes.Internal, "delete Morpheus storage volume: %v", err)
+	if err := d.volumes.DeleteVolume(ctx, ref); err != nil {
+		return nil, status.Errorf(codes.Internal, "delete Morpheus instance volume: %v", err)
 	}
 	return &csi.DeleteVolumeResponse{}, nil
 }
 
 func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.ControllerPublishVolumeRequest) (*csi.ControllerPublishVolumeResponse, error) {
-	if d.attachments == nil || d.discovery == nil {
+	if d.volumes == nil {
 		return nil, status.Error(codes.Unavailable, "Morpheus controller client is not configured")
 	}
-	volumeID := strings.TrimSpace(req.GetVolumeId())
-	nodeID := strings.TrimSpace(req.GetNodeId())
-	if volumeID == "" {
-		return nil, status.Error(codes.InvalidArgument, "volume id is required")
+	ref, err := morpheus.DecodeVolumeID(req.GetVolumeId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if nodeID == "" {
+	if strings.TrimSpace(req.GetNodeId()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "node id is required")
 	}
-
-	serverID, err := d.discovery.ResolveServerIDForNode(ctx, nodeID)
-	if err != nil {
-		return nil, status.Errorf(codes.FailedPrecondition, "resolve Morpheus server for node %q: %v", nodeID, err)
+	if contextInstance := strings.TrimSpace(req.GetVolumeContext()[morpheus.VolumeContextInstanceID]); contextInstance != "" && contextInstance != ref.InstanceID {
+		return nil, status.Errorf(codes.FailedPrecondition, "volume instance %q does not match context instance %q", ref.InstanceID, contextInstance)
 	}
-	volume, err := d.attachments.AttachStorageVolume(ctx, morpheus.AttachStorageVolumeRequest{
-		ServerID: serverID,
-		VolumeID: volumeID,
-		NodeID:   nodeID,
-	})
+	volume, err := d.volumes.GetVolume(ctx, ref)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "attach Morpheus storage volume: %v", err)
+		return nil, status.Errorf(codes.Internal, "get Morpheus instance volume: %v", err)
 	}
 
 	publishContext := map[string]string{
-		morpheus.ParamStorageServerID: serverID,
+		morpheus.VolumeContextInstanceID: ref.InstanceID,
+		morpheus.VolumeContextVolumeName: volume.Name,
 	}
 	if volume != nil && volume.DevicePath != "" {
-		publishContext["morpheus.devicePath"] = volume.DevicePath
+		publishContext[morpheus.VolumeContextDevicePath] = volume.DevicePath
 	}
 	return &csi.ControllerPublishVolumeResponse{PublishContext: publishContext}, nil
 }
 
 func (d *Driver) ControllerUnpublishVolume(ctx context.Context, req *csi.ControllerUnpublishVolumeRequest) (*csi.ControllerUnpublishVolumeResponse, error) {
-	if d.attachments == nil || d.discovery == nil {
+	if d.volumes == nil {
 		return nil, status.Error(codes.Unavailable, "Morpheus controller client is not configured")
 	}
-	volumeID := strings.TrimSpace(req.GetVolumeId())
-	nodeID := strings.TrimSpace(req.GetNodeId())
-	if volumeID == "" {
-		return nil, status.Error(codes.InvalidArgument, "volume id is required")
+	if _, err := morpheus.DecodeVolumeID(req.GetVolumeId()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if nodeID == "" {
+	if strings.TrimSpace(req.GetNodeId()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "node id is required")
 	}
-
-	serverID, err := d.discovery.ResolveServerIDForNode(ctx, nodeID)
-	if err != nil {
-		return nil, status.Errorf(codes.FailedPrecondition, "resolve Morpheus server for node %q: %v", nodeID, err)
-	}
-	if err := d.attachments.DetachStorageVolume(ctx, serverID, volumeID); err != nil {
-		return nil, status.Errorf(codes.Internal, "detach Morpheus storage volume: %v", err)
-	}
 	return &csi.ControllerUnpublishVolumeResponse{}, nil
+}
+
+func (d *Driver) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
+	if d.volumes == nil {
+		return nil, status.Error(codes.Unavailable, "Morpheus controller client is not configured")
+	}
+	ref, err := morpheus.DecodeVolumeID(req.GetVolumeId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if req.GetVolumeCapability() != nil {
+		if err := validateVolumeCapabilities([]*csi.VolumeCapability{req.GetVolumeCapability()}); err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+	}
+	sizeGiB, err := requestedSizeGiB(req.GetCapacityRange())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	volume, err := d.volumes.ExpandVolume(ctx, morpheus.ResizeVolumeRequest{
+		SizeGiB:  sizeGiB,
+		VolumeID: ref.VolumeID,
+		StorageClass: map[string]string{
+			morpheus.ParamInstanceID: ref.InstanceID,
+		},
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "expand Morpheus instance volume: %v", err)
+	}
+	return &csi.ControllerExpandVolumeResponse{
+		CapacityBytes:         volume.SizeGiB * gibibyte,
+		NodeExpansionRequired: true,
+	}, nil
 }
 
 func controllerCapability(capability csi.ControllerServiceCapability_RPC_Type) *csi.ControllerServiceCapability {

@@ -47,6 +47,19 @@ spec:
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
+        - name: csi-resizer
+          image: registry.k8s.io/sig-storage/csi-resizer:v1.13.2
+          args:
+            - --csi-address=$(ADDRESS)
+            - --leader-election
+            - --timeout=60s
+            - --v=2
+          env:
+            - name: ADDRESS
+              value: /csi/csi.sock
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
         - name: morpheus-csi-driver
           image: ghcr.io/da3m0nsec/morpheus-csi:dev
           imagePullPolicy: IfNotPresent

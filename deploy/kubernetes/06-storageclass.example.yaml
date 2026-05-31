@@ -8,11 +8,12 @@ metadata:
 provisioner: csi.morpheusdata.com
 reclaimPolicy: Delete
 volumeBindingMode: WaitForFirstConsumer
-allowVolumeExpansion: false
+allowVolumeExpansion: true
 parameters:
-  morpheus.storageServerId: "12"
-  morpheus.storageVolumeTypeId: "4"
-  morpheus.storageGroup: default
+  morpheus.instanceId: "replace-with-k8s-node-morpheus-instance-id"
+  morpheus.storageTypeId: "replace-with-storage-type-id"
+  morpheus.datastoreId: "replace-with-datastore-id"
+  morpheus.deleteOriginalVolumes: "false"
   csi.storage.k8s.io/fstype: ext4
   csi.storage.k8s.io/provisioner-secret-name: morpheus-csi-credentials
   csi.storage.k8s.io/provisioner-secret-namespace: kube-system

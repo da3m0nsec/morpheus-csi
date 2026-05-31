@@ -57,7 +57,7 @@ Kubernetes CSI drivers normally run with standard sidecar containers rather than
 - `external-attacher`: watches `VolumeAttachment` objects and calls `ControllerPublishVolume`/`ControllerUnpublishVolume`. Use it only if the Morpheus storage path requires attach/detach.
 - `node-driver-registrar`: runs on every node, discovers driver info through `NodeGetInfo`, and registers the driver socket with kubelet.
 - `livenessprobe`: checks whether the CSI endpoint is responsive.
-- `external-resizer`, `external-snapshotter`, and health-monitor sidecars are out of scope for the MVP.
+- `external-resizer` is required for PVC expansion. `external-snapshotter` and health-monitor sidecars are out of scope for the MVP.
 
 ## Kubernetes Objects
 
@@ -107,5 +107,5 @@ The Morpheus-specific keys should avoid the reserved prefix, for example `morphe
 - Use standard sidecars rather than writing Kubernetes controllers.
 - Implement `CreateVolume` and `DeleteVolume` from the start.
 - Include `external-attacher` only if the first Morpheus backend needs attach/detach.
-- Keep snapshots, resize, topology, raw block, and health monitoring out of the first release.
+- Keep snapshots, topology, raw block, and health monitoring out of the first release.
 - Make driver capabilities match actual implementation; over-advertising capabilities will cause Kubernetes to call unsupported paths.

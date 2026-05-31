@@ -28,8 +28,8 @@ func TestControllerCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ControllerGetCapabilities returned error: %v", err)
 	}
-	if got := len(resp.GetCapabilities()); got != 2 {
-		t.Fatalf("expected 2 controller capabilities, got %d", got)
+	if got := len(resp.GetCapabilities()); got != 3 {
+		t.Fatalf("expected 3 controller capabilities, got %d", got)
 	}
 }
 
@@ -40,7 +40,7 @@ func TestNodeCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NodeGetCapabilities returned error: %v", err)
 	}
-	if got := len(resp.GetCapabilities()); got != 1 {
-		t.Fatalf("expected 1 node capability, got %d", got)
+	if got := len(resp.GetCapabilities()); got != 2 {
+		t.Fatalf("expected 2 node capabilities, got %d", got)
 	}
 }

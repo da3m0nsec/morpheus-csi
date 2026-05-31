@@ -15,52 +15,48 @@ import (
 )
 
 const (
-	ParamStorageServerID     = "morpheus.storageServerId"
-	ParamStorageVolumeTypeID = "morpheus.storageVolumeTypeId"
-	ParamStorageGroup        = "morpheus.storageGroup"
-	ParamConfigPrefix        = "morpheus.config."
+	ParamInstanceID            = "morpheus.instanceId"
+	ParamStorageTypeID         = "morpheus.storageTypeId"
+	ParamDatastoreID           = "morpheus.datastoreId"
+	ParamDeleteOriginalVolumes = "morpheus.deleteOriginalVolumes"
+	ParamConfigPrefix          = "morpheus.config."
+
+	VolumeContextInstanceID = "morpheus.instanceId"
+	VolumeContextVolumeName = "morpheus.volumeName"
+	VolumeContextDevicePath = "morpheus.devicePath"
 )
 
 type StorageVolume struct {
-	ID         string
-	Name       string
-	SizeGiB    int64
-	ServerID   string
-	TypeID     string
-	DevicePath string
+	ID            string
+	Name          string
+	SizeGiB       int64
+	RootVolume    bool
+	StorageTypeID string
+	DatastoreID   string
+	DevicePath    string
 }
 
-type StorageServer struct {
-	ID       string
-	Name     string
-	Hostname string
+type VolumeRef struct {
+	InstanceID string
+	VolumeID   string
 }
 
-type CreateStorageVolumeRequest struct {
+type ResizeVolumeRequest struct {
 	Name         string
 	SizeGiB      int64
 	StorageClass map[string]string
+	VolumeID     string
 }
 
-type AttachStorageVolumeRequest struct {
-	ServerID string
-	VolumeID string
-	NodeID   string
-}
-
-type StorageVolumeClient interface {
-	CreateStorageVolume(ctx context.Context, req CreateStorageVolumeRequest) (*StorageVolume, error)
-	DeleteStorageVolume(ctx context.Context, volumeID string) error
-}
-
-type StorageAttachmentClient interface {
-	AttachStorageVolume(ctx context.Context, req AttachStorageVolumeRequest) (*StorageVolume, error)
-	DetachStorageVolume(ctx context.Context, serverID string, volumeID string) error
+type InstanceVolumeClient interface {
+	EnsureVolume(ctx context.Context, req ResizeVolumeRequest) (*StorageVolume, error)
+	DeleteVolume(ctx context.Context, ref VolumeRef) error
+	ExpandVolume(ctx context.Context, req ResizeVolumeRequest) (*StorageVolume, error)
+	GetVolume(ctx context.Context, ref VolumeRef) (*StorageVolume, error)
 }
 
 type StorageDiscoveryClient interface {
 	ValidateStorageClass(ctx context.Context, parameters map[string]string) error
-	ResolveServerIDForNode(ctx context.Context, nodeID string) (string, error)
 }
 
 type Client struct {
@@ -87,143 +83,233 @@ func NewClientWithHTTPClient(rawURL string, token string, httpClient *http.Clien
 	return &Client{baseURL: parsed, token: token, httpClient: httpClient}, nil
 }
 
-func (c *Client) ValidateStorageClass(_ context.Context, parameters map[string]string) error {
-	if strings.TrimSpace(parameters[ParamStorageServerID]) == "" {
-		return fmt.Errorf("storage class parameter %q is required", ParamStorageServerID)
+func EncodeVolumeID(instanceID string, volumeID string) string {
+	return strings.TrimSpace(instanceID) + ":" + strings.TrimSpace(volumeID)
+}
+
+func DecodeVolumeID(volumeID string) (VolumeRef, error) {
+	parts := strings.Split(strings.TrimSpace(volumeID), ":")
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return VolumeRef{}, fmt.Errorf("volume id must have format <instanceID>:<volumeID>")
 	}
-	if strings.TrimSpace(parameters[ParamStorageVolumeTypeID]) == "" {
-		return fmt.Errorf("storage class parameter %q is required", ParamStorageVolumeTypeID)
+	return VolumeRef{InstanceID: strings.TrimSpace(parts[0]), VolumeID: strings.TrimSpace(parts[1])}, nil
+}
+
+func (c *Client) ValidateStorageClass(_ context.Context, parameters map[string]string) error {
+	if strings.TrimSpace(parameters[ParamInstanceID]) == "" {
+		return fmt.Errorf("storage class parameter %q is required", ParamInstanceID)
 	}
 	return nil
 }
 
-func (c *Client) CreateStorageVolume(ctx context.Context, req CreateStorageVolumeRequest) (*StorageVolume, error) {
-	if err := c.ValidateStorageClass(ctx, req.StorageClass); err != nil {
+func (c *Client) EnsureVolume(ctx context.Context, req ResizeVolumeRequest) (*StorageVolume, error) {
+	if err := c.validateResizeRequest(ctx, req); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(req.Name) == "" {
-		return nil, errors.New("volume name is required")
-	}
-	if req.SizeGiB <= 0 {
-		return nil, errors.New("volume size must be greater than zero")
-	}
 
-	existing, err := c.findStorageVolumeByName(ctx, req.Name)
+	instanceID := strings.TrimSpace(req.StorageClass[ParamInstanceID])
+	volumes, err := c.getInstanceVolumes(ctx, instanceID)
 	if err != nil {
 		return nil, err
 	}
-	if existing != nil {
-		if existing.SizeGiB > 0 && existing.SizeGiB < req.SizeGiB {
-			return nil, fmt.Errorf("existing Morpheus volume %q is smaller than requested size", req.Name)
+
+	if existing := findVolumeByName(volumes, req.Name); existing != nil {
+		if existing.SizeGiB >= req.SizeGiB {
+			return existing, nil
 		}
-		return existing, nil
+		return c.resizeVolume(ctx, instanceID, volumes, existing.ID, req)
 	}
-
-	storageServerID := strings.TrimSpace(req.StorageClass[ParamStorageServerID])
-	storageVolumeTypeID := strings.TrimSpace(req.StorageClass[ParamStorageVolumeTypeID])
-	body := map[string]any{
-		"storageVolume": map[string]any{
-			"name":                req.Name,
-			"size":                req.SizeGiB,
-			"sizeGiB":             req.SizeGiB,
-			"maxStorage":          req.SizeGiB,
-			"storageServerId":     jsonID(storageServerID),
-			"storageServer":       map[string]any{"id": jsonID(storageServerID)},
-			"storageVolumeTypeId": jsonID(storageVolumeTypeID),
-			"type":                map[string]any{"id": jsonID(storageVolumeTypeID)},
-			"storageGroup":        req.StorageClass[ParamStorageGroup],
-			"config":              storageConfig(req.StorageClass),
-		},
-	}
-
-	var response map[string]any
-	if err := c.do(ctx, http.MethodPost, "/api/storage-volumes", nil, body, &response); err != nil {
-		return nil, err
-	}
-	volume := parseVolume(firstMap(response, "storageVolume", "volume"))
-	if volume == nil || volume.ID == "" {
-		return nil, fmt.Errorf("Morpheus create response did not include a storage volume id")
-	}
-	return volume, nil
+	return c.resizeVolume(ctx, instanceID, volumes, "", req)
 }
 
-func (c *Client) DeleteStorageVolume(ctx context.Context, volumeID string) error {
-	volumeID = strings.TrimSpace(volumeID)
-	if volumeID == "" {
-		return errors.New("volume id is required")
+func (c *Client) DeleteVolume(ctx context.Context, ref VolumeRef) error {
+	if err := validateRef(ref); err != nil {
+		return err
 	}
-	err := c.do(ctx, http.MethodDelete, "/api/storage-volumes/"+url.PathEscape(volumeID), nil, nil, nil)
-	if isNotFound(err) {
+	volumes, err := c.getInstanceVolumes(ctx, ref.InstanceID)
+	if err != nil {
+		return err
+	}
+	target := findVolumeByID(volumes, ref.VolumeID)
+	if target == nil {
 		return nil
 	}
-	return err
+	if target.RootVolume {
+		return fmt.Errorf("refusing to delete root volume %q", ref.VolumeID)
+	}
+	next := make([]StorageVolume, 0, len(volumes)-1)
+	for _, volume := range volumes {
+		if volume.ID != ref.VolumeID {
+			next = append(next, volume)
+		}
+	}
+	return c.resizeInstance(ctx, ref.InstanceID, next, nil)
 }
 
-func (c *Client) AttachStorageVolume(ctx context.Context, req AttachStorageVolumeRequest) (*StorageVolume, error) {
-	if strings.TrimSpace(req.ServerID) == "" {
-		return nil, errors.New("server id is required")
+func (c *Client) ExpandVolume(ctx context.Context, req ResizeVolumeRequest) (*StorageVolume, error) {
+	if err := c.validateResizeRequest(ctx, req); err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(req.VolumeID) == "" {
 		return nil, errors.New("volume id is required")
 	}
-
-	path := fmt.Sprintf("/api/servers/%s/volumes/%s/attach", url.PathEscape(req.ServerID), url.PathEscape(req.VolumeID))
-	body := map[string]any{
-		"volume": map[string]any{
-			"id": jsonID(req.VolumeID),
-		},
-	}
-	var response map[string]any
-	if err := c.do(ctx, http.MethodPut, path, nil, body, &response); err != nil {
+	instanceID := strings.TrimSpace(req.StorageClass[ParamInstanceID])
+	volumes, err := c.getInstanceVolumes(ctx, instanceID)
+	if err != nil {
 		return nil, err
 	}
-	if volume := parseVolume(firstMap(response, "storageVolume", "volume")); volume != nil {
-		return volume, nil
+	existing := findVolumeByID(volumes, req.VolumeID)
+	if existing == nil {
+		return nil, fmt.Errorf("volume %q not found on instance %q", req.VolumeID, instanceID)
 	}
-	return &StorageVolume{ID: req.VolumeID, ServerID: req.ServerID}, nil
+	if existing.RootVolume {
+		return nil, fmt.Errorf("refusing to resize root volume %q", req.VolumeID)
+	}
+	if existing.SizeGiB > req.SizeGiB {
+		return nil, fmt.Errorf("cannot shrink volume %q from %dGiB to %dGiB", req.VolumeID, existing.SizeGiB, req.SizeGiB)
+	}
+	if existing.SizeGiB == req.SizeGiB {
+		return existing, nil
+	}
+	return c.resizeVolume(ctx, instanceID, volumes, req.VolumeID, req)
 }
 
-func (c *Client) DetachStorageVolume(ctx context.Context, serverID string, volumeID string) error {
-	if strings.TrimSpace(serverID) == "" {
-		return errors.New("server id is required")
+func (c *Client) GetVolume(ctx context.Context, ref VolumeRef) (*StorageVolume, error) {
+	if err := validateRef(ref); err != nil {
+		return nil, err
 	}
-	if strings.TrimSpace(volumeID) == "" {
+	volumes, err := c.getInstanceVolumes(ctx, ref.InstanceID)
+	if err != nil {
+		return nil, err
+	}
+	volume := findVolumeByID(volumes, ref.VolumeID)
+	if volume == nil {
+		return nil, fmt.Errorf("volume %q not found on instance %q", ref.VolumeID, ref.InstanceID)
+	}
+	return volume, nil
+}
+
+func (c *Client) validateResizeRequest(ctx context.Context, req ResizeVolumeRequest) error {
+	if err := c.ValidateStorageClass(ctx, req.StorageClass); err != nil {
+		return err
+	}
+	if strings.TrimSpace(req.Name) == "" && strings.TrimSpace(req.VolumeID) == "" {
+		return errors.New("volume name or volume id is required")
+	}
+	if req.SizeGiB <= 0 {
+		return errors.New("volume size must be greater than zero")
+	}
+	return nil
+}
+
+func validateRef(ref VolumeRef) error {
+	if strings.TrimSpace(ref.InstanceID) == "" {
+		return errors.New("instance id is required")
+	}
+	if strings.TrimSpace(ref.VolumeID) == "" {
 		return errors.New("volume id is required")
 	}
-	path := fmt.Sprintf("/api/servers/%s/volumes/%s/detach", url.PathEscape(serverID), url.PathEscape(volumeID))
-	err := c.do(ctx, http.MethodPut, path, nil, nil, nil)
-	if isNotFound(err) {
-		return nil
-	}
-	return err
+	return nil
 }
 
-func (c *Client) ResolveServerIDForNode(ctx context.Context, nodeID string) (string, error) {
-	nodeID = strings.TrimSpace(nodeID)
-	if nodeID == "" {
-		return "", errors.New("node id is required")
+func (c *Client) resizeVolume(ctx context.Context, instanceID string, volumes []StorageVolume, volumeID string, req ResizeVolumeRequest) (*StorageVolume, error) {
+	found := false
+	next := make([]StorageVolume, 0, len(volumes)+1)
+	for _, volume := range volumes {
+		if volume.ID == volumeID || (volumeID == "" && volume.Name == req.Name) {
+			volume.Name = firstNonEmpty(req.Name, volume.Name)
+			volume.SizeGiB = req.SizeGiB
+			volume.StorageTypeID = firstNonEmpty(volume.StorageTypeID, req.StorageClass[ParamStorageTypeID])
+			volume.DatastoreID = firstNonEmpty(volume.DatastoreID, req.StorageClass[ParamDatastoreID])
+			found = true
+		}
+		next = append(next, volume)
 	}
-	values := url.Values{}
-	values.Set("phrase", nodeID)
+	if !found {
+		next = append(next, StorageVolume{
+			Name:          req.Name,
+			SizeGiB:       req.SizeGiB,
+			RootVolume:    false,
+			StorageTypeID: req.StorageClass[ParamStorageTypeID],
+			DatastoreID:   req.StorageClass[ParamDatastoreID],
+		})
+	}
+	if err := c.resizeInstance(ctx, instanceID, next, req.StorageClass); err != nil {
+		return nil, err
+	}
 
-	var response map[string]any
-	if err := c.do(ctx, http.MethodGet, "/api/storage-servers", values, nil, &response); err != nil {
-		return "", err
+	refreshed, err := c.getInstanceVolumes(ctx, instanceID)
+	if err != nil {
+		return nil, err
 	}
-	servers := parseServerList(response)
-	var matches []StorageServer
-	for _, server := range servers {
-		if sameName(server.Name, nodeID) || sameName(server.Hostname, nodeID) {
-			matches = append(matches, server)
+	if volumeID != "" {
+		if volume := findVolumeByID(refreshed, volumeID); volume != nil {
+			return volume, nil
 		}
 	}
-	if len(matches) == 0 {
-		return "", fmt.Errorf("no Morpheus storage server matched Kubernetes node %q", nodeID)
+	if volume := findVolumeByName(refreshed, req.Name); volume != nil {
+		return volume, nil
 	}
-	if len(matches) > 1 {
-		return "", fmt.Errorf("multiple Morpheus storage servers matched Kubernetes node %q", nodeID)
+	return nil, fmt.Errorf("Morpheus resize completed but volume %q was not found", req.Name)
+}
+
+func (c *Client) resizeInstance(ctx context.Context, instanceID string, volumes []StorageVolume, parameters map[string]string) error {
+	body := map[string]any{
+		"instance": map[string]any{
+			"volumes":               resizeVolumesPayload(volumes),
+			"deleteOriginalVolumes": deleteOriginalVolumes(parameters),
+		},
 	}
-	return matches[0].ID, nil
+	return c.do(ctx, http.MethodPut, "/api/instances/"+url.PathEscape(instanceID)+"/resize", nil, body, nil)
+}
+
+func (c *Client) getInstanceVolumes(ctx context.Context, instanceID string) ([]StorageVolume, error) {
+	values := url.Values{}
+	values.Set("details", "true")
+
+	var response map[string]any
+	if err := c.do(ctx, http.MethodGet, "/api/instances/"+url.PathEscape(instanceID), values, nil, &response); err != nil {
+		return nil, err
+	}
+	instance := firstMap(response, "instance")
+	if len(instance) == 0 {
+		instance = response
+	}
+	return parseVolumeList(instance), nil
+}
+
+func resizeVolumesPayload(volumes []StorageVolume) []map[string]any {
+	payload := make([]map[string]any, 0, len(volumes))
+	for _, volume := range volumes {
+		item := map[string]any{
+			"name":       volume.Name,
+			"size":       volume.SizeGiB,
+			"sizeGiB":    volume.SizeGiB,
+			"maxStorage": volume.SizeGiB,
+			"rootVolume": volume.RootVolume,
+		}
+		if volume.ID != "" {
+			item["id"] = jsonID(volume.ID)
+		}
+		if volume.StorageTypeID != "" {
+			item["storageType"] = jsonID(volume.StorageTypeID)
+			item["storageTypeId"] = jsonID(volume.StorageTypeID)
+		}
+		if volume.DatastoreID != "" {
+			item["datastoreId"] = jsonID(volume.DatastoreID)
+			item["datastore"] = map[string]any{"id": jsonID(volume.DatastoreID)}
+		}
+		payload = append(payload, item)
+	}
+	return payload
+}
+
+func deleteOriginalVolumes(parameters map[string]string) bool {
+	if parameters == nil {
+		return false
+	}
+	value, _ := strconv.ParseBool(strings.TrimSpace(parameters[ParamDeleteOriginalVolumes]))
+	return value
 }
 
 type apiError struct {
@@ -236,11 +322,6 @@ func (e apiError) Error() string {
 		return fmt.Sprintf("Morpheus API returned HTTP %d", e.statusCode)
 	}
 	return fmt.Sprintf("Morpheus API returned HTTP %d: %s", e.statusCode, e.body)
-}
-
-func isNotFound(err error) bool {
-	var apiErr apiError
-	return errors.As(err, &apiErr) && apiErr.statusCode == http.StatusNotFound
 }
 
 func (c *Client) do(ctx context.Context, method string, path string, query url.Values, body any, out any) error {
@@ -288,72 +369,19 @@ func (c *Client) do(ctx context.Context, method string, path string, query url.V
 	return json.Unmarshal(data, out)
 }
 
-func (c *Client) findStorageVolumeByName(ctx context.Context, name string) (*StorageVolume, error) {
-	values := url.Values{}
-	values.Set("name", name)
-	values.Set("phrase", name)
-
-	var response map[string]any
-	if err := c.do(ctx, http.MethodGet, "/api/storage-volumes", values, nil, &response); err != nil {
-		if isNotFound(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	for _, volume := range parseVolumeList(response) {
-		if volume.Name == name {
-			return &volume, nil
-		}
-	}
-	return nil, nil
-}
-
-func storageConfig(parameters map[string]string) map[string]string {
-	config := map[string]string{}
-	for key, value := range parameters {
-		if strings.HasPrefix(key, ParamConfigPrefix) {
-			config[strings.TrimPrefix(key, ParamConfigPrefix)] = value
-		}
-	}
-	return config
-}
-
-func jsonID(value string) any {
-	if id, err := strconv.ParseInt(value, 10, 64); err == nil {
-		return id
-	}
-	return value
-}
-
-func parseVolumeList(response map[string]any) []StorageVolume {
-	var volumes []StorageVolume
-	for _, key := range []string{"storageVolumes", "volumes", "data"} {
-		for _, raw := range asSlice(response[key]) {
-			if volume := parseVolume(asMap(raw)); volume != nil {
-				volumes = append(volumes, *volume)
+func parseVolumeList(instance map[string]any) []StorageVolume {
+	for _, key := range []string{"volumes", "storageVolumes", "disks"} {
+		if rawVolumes := asSlice(instance[key]); len(rawVolumes) > 0 {
+			volumes := make([]StorageVolume, 0, len(rawVolumes))
+			for _, raw := range rawVolumes {
+				if volume := parseVolume(asMap(raw)); volume != nil {
+					volumes = append(volumes, *volume)
+				}
 			}
+			return volumes
 		}
 	}
-	return volumes
-}
-
-func parseServerList(response map[string]any) []StorageServer {
-	var servers []StorageServer
-	for _, key := range []string{"storageServers", "servers", "data"} {
-		for _, raw := range asSlice(response[key]) {
-			m := asMap(raw)
-			id := stringValue(m["id"])
-			if id == "" {
-				continue
-			}
-			servers = append(servers, StorageServer{
-				ID:       id,
-				Name:     stringValue(m["name"]),
-				Hostname: stringValue(firstValue(m, "hostname", "hostName", "externalId", "externalID")),
-			})
-		}
-	}
-	return servers
+	return nil
 }
 
 func parseVolume(m map[string]any) *StorageVolume {
@@ -361,18 +389,19 @@ func parseVolume(m map[string]any) *StorageVolume {
 		return nil
 	}
 	volume := &StorageVolume{
-		ID:         stringValue(m["id"]),
-		Name:       stringValue(m["name"]),
-		SizeGiB:    int64Value(firstValue(m, "sizeGiB", "sizeGB", "sizeGb", "maxStorage", "size")),
-		ServerID:   stringValue(firstValue(m, "storageServerId", "serverId")),
-		TypeID:     stringValue(firstValue(m, "storageVolumeTypeId", "typeId")),
-		DevicePath: stringValue(firstValue(m, "devicePath", "device", "path")),
+		ID:            stringValue(m["id"]),
+		Name:          stringValue(m["name"]),
+		SizeGiB:       int64Value(firstValue(m, "sizeGiB", "sizeGB", "sizeGb", "maxStorage", "size")),
+		RootVolume:    boolValue(firstValue(m, "rootVolume", "root", "isRoot")),
+		StorageTypeID: stringValue(firstValue(m, "storageTypeId", "storageType")),
+		DatastoreID:   stringValue(firstValue(m, "datastoreId")),
+		DevicePath:    stringValue(firstValue(m, "devicePath", "device", "path")),
 	}
-	if volume.ServerID == "" {
-		volume.ServerID = stringValue(asMap(firstValue(m, "storageServer", "server"))["id"])
+	if volume.StorageTypeID == "" {
+		volume.StorageTypeID = stringValue(asMap(firstValue(m, "storageType", "type"))["id"])
 	}
-	if volume.TypeID == "" {
-		volume.TypeID = stringValue(asMap(firstValue(m, "type", "storageVolumeType"))["id"])
+	if volume.DatastoreID == "" {
+		volume.DatastoreID = stringValue(asMap(firstValue(m, "datastore"))["id"])
 	}
 	if volume.DevicePath == "" {
 		volume.DevicePath = stringValue(asMap(firstValue(m, "connectionInfo", "attachment", "mount"))["devicePath"])
@@ -381,6 +410,24 @@ func parseVolume(m map[string]any) *StorageVolume {
 		return nil
 	}
 	return volume
+}
+
+func findVolumeByName(volumes []StorageVolume, name string) *StorageVolume {
+	for i := range volumes {
+		if volumes[i].Name == name {
+			return &volumes[i]
+		}
+	}
+	return nil
+}
+
+func findVolumeByID(volumes []StorageVolume, id string) *StorageVolume {
+	for i := range volumes {
+		if volumes[i].ID == id {
+			return &volumes[i]
+		}
+	}
+	return nil
 }
 
 func firstMap(m map[string]any, keys ...string) map[string]any {
@@ -446,6 +493,30 @@ func int64Value(value any) int64 {
 	}
 }
 
-func sameName(left string, right string) bool {
-	return strings.EqualFold(strings.TrimSpace(left), strings.TrimSpace(right))
+func boolValue(value any) bool {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		parsed, _ := strconv.ParseBool(strings.TrimSpace(typed))
+		return parsed
+	default:
+		return false
+	}
+}
+
+func jsonID(value string) any {
+	if id, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return id
+	}
+	return value
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }

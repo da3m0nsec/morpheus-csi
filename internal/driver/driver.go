@@ -24,10 +24,9 @@ type Driver struct {
 	cfg    config.Config
 	logger *log.Logger
 
-	volumes     morpheus.StorageVolumeClient
-	attachments morpheus.StorageAttachmentClient
-	discovery   morpheus.StorageDiscoveryClient
-	mounter     Mounter
+	volumes   morpheus.InstanceVolumeClient
+	discovery morpheus.StorageDiscoveryClient
+	mounter   Mounter
 }
 
 func New(cfg config.Config, logger *log.Logger) *Driver {
@@ -41,20 +40,18 @@ func New(cfg config.Config, logger *log.Logger) *Driver {
 	}
 
 	return &Driver{
-		cfg:         cfg,
-		logger:      logger,
-		volumes:     client,
-		attachments: client,
-		discovery:   client,
-		mounter:     realMounter{},
+		cfg:       cfg,
+		logger:    logger,
+		volumes:   client,
+		discovery: client,
+		mounter:   realMounter{},
 	}
 }
 
 func NewWithDependencies(
 	cfg config.Config,
 	logger *log.Logger,
-	volumes morpheus.StorageVolumeClient,
-	attachments morpheus.StorageAttachmentClient,
+	volumes morpheus.InstanceVolumeClient,
 	discovery morpheus.StorageDiscoveryClient,
 	mounter Mounter,
 ) *Driver {
@@ -62,12 +59,11 @@ func NewWithDependencies(
 		mounter = realMounter{}
 	}
 	return &Driver{
-		cfg:         cfg,
-		logger:      logger,
-		volumes:     volumes,
-		attachments: attachments,
-		discovery:   discovery,
-		mounter:     mounter,
+		cfg:       cfg,
+		logger:    logger,
+		volumes:   volumes,
+		discovery: discovery,
+		mounter:   mounter,
 	}
 }
 

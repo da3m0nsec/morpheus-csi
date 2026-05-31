@@ -48,6 +48,30 @@ func run(ctx context.Context, name string, args ...string) error {
 	return nil
 }
 
+func commandOutput(ctx context.Context, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		text := strings.TrimSpace(string(output))
+		if text == "" {
+			return "", fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+		}
+		return "", fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, text)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func mountedSource(ctx context.Context, volumePath string) (string, error) {
+	source, err := commandOutput(ctx, "findmnt", "-n", "-o", "SOURCE", "--target", volumePath)
+	if err != nil {
+		return "", err
+	}
+	if source == "" {
+		return "", fmt.Errorf("no mounted source found for %s", volumePath)
+	}
+	return source, nil
+}
+
 func fmtMountError(operation string, err error) error {
 	return fmt.Errorf("%s: %w", operation, err)
 }

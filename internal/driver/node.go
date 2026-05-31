@@ -22,6 +22,7 @@ func (d *Driver) NodeGetCapabilities(context.Context, *csi.NodeGetCapabilitiesRe
 	return &csi.NodeGetCapabilitiesResponse{
 		Capabilities: []*csi.NodeServiceCapability{
 			nodeCapability(csi.NodeServiceCapability_RPC_STAGE_UNSTAGE_VOLUME),
+			nodeCapability(csi.NodeServiceCapability_RPC_EXPAND_VOLUME),
 		},
 	}, nil
 }
@@ -98,6 +99,28 @@ func (d *Driver) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpublish
 	return &csi.NodeUnpublishVolumeResponse{}, nil
 }
 
+func (d *Driver) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolumeRequest) (*csi.NodeExpandVolumeResponse, error) {
+	volumePath := strings.TrimSpace(req.GetVolumePath())
+	if strings.TrimSpace(req.GetVolumeId()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume id is required")
+	}
+	if volumePath == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume path is required")
+	}
+	if req.GetVolumeCapability() == nil || req.GetVolumeCapability().GetMount() == nil {
+		return nil, status.Error(codes.InvalidArgument, "mount volume capability is required")
+	}
+	sizeGiB, err := requestedSizeGiB(req.GetCapacityRange())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	fsType := filesystemType(req.GetVolumeCapability(), nil)
+	if err := d.mounter.ExpandFilesystem(ctx, volumePath, fsType); err != nil {
+		return nil, status.Errorf(codes.Internal, "expand Morpheus volume filesystem at %s: %v", volumePath, err)
+	}
+	return &csi.NodeExpandVolumeResponse{CapacityBytes: sizeGiB * gibibyte}, nil
+}
+
 func nodeCapability(capability csi.NodeServiceCapability_RPC_Type) *csi.NodeServiceCapability {
 	return &csi.NodeServiceCapability{
 		Type: &csi.NodeServiceCapability_Rpc{
@@ -112,6 +135,7 @@ type Mounter interface {
 	Stage(ctx context.Context, devicePath string, stagingPath string, fsType string, readOnly bool) error
 	BindMount(ctx context.Context, source string, target string, readOnly bool) error
 	Unmount(ctx context.Context, target string) error
+	ExpandFilesystem(ctx context.Context, volumePath string, fsType string) error
 }
 
 type realMounter struct{}
@@ -183,6 +207,21 @@ func (realMounter) Unmount(ctx context.Context, target string) error {
 	}
 	_ = os.Remove(target)
 	return nil
+}
+
+func (realMounter) ExpandFilesystem(ctx context.Context, volumePath string, fsType string) error {
+	switch strings.TrimSpace(fsType) {
+	case "", "ext4":
+		source, err := mountedSource(ctx, volumePath)
+		if err != nil {
+			return err
+		}
+		return run(ctx, "resize2fs", source)
+	case "xfs":
+		return run(ctx, "xfs_growfs", volumePath)
+	default:
+		return fmtMountError("expand filesystem", errors.New("unsupported filesystem type "+fsType))
+	}
 }
 
 func devicePath(maps ...map[string]string) string {
