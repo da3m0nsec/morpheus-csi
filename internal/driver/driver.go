@@ -11,7 +11,8 @@ import (
 	"strings"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	"github.com/morpheusdata/morpheus-csi/internal/config"
+	"github.com/da3m0nsec/morpheus-csi/internal/config"
+	"github.com/da3m0nsec/morpheus-csi/internal/morpheus"
 	"google.golang.org/grpc"
 )
 
@@ -22,12 +23,51 @@ type Driver struct {
 
 	cfg    config.Config
 	logger *log.Logger
+
+	volumes     morpheus.StorageVolumeClient
+	attachments morpheus.StorageAttachmentClient
+	discovery   morpheus.StorageDiscoveryClient
+	mounter     Mounter
 }
 
 func New(cfg config.Config, logger *log.Logger) *Driver {
+	var client *morpheus.Client
+	if strings.TrimSpace(cfg.MorpheusURL) != "" && strings.TrimSpace(cfg.MorpheusToken) != "" {
+		var err error
+		client, err = morpheus.NewClient(cfg.MorpheusURL, cfg.MorpheusToken)
+		if err != nil && logger != nil {
+			logger.Printf("invalid Morpheus client configuration: %v", err)
+		}
+	}
+
 	return &Driver{
-		cfg:    cfg,
-		logger: logger,
+		cfg:         cfg,
+		logger:      logger,
+		volumes:     client,
+		attachments: client,
+		discovery:   client,
+		mounter:     realMounter{},
+	}
+}
+
+func NewWithDependencies(
+	cfg config.Config,
+	logger *log.Logger,
+	volumes morpheus.StorageVolumeClient,
+	attachments morpheus.StorageAttachmentClient,
+	discovery morpheus.StorageDiscoveryClient,
+	mounter Mounter,
+) *Driver {
+	if mounter == nil {
+		mounter = realMounter{}
+	}
+	return &Driver{
+		cfg:         cfg,
+		logger:      logger,
+		volumes:     volumes,
+		attachments: attachments,
+		discovery:   discovery,
+		mounter:     mounter,
 	}
 }
 

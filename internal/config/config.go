@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -43,6 +44,15 @@ func (c Config) Validate() error {
 
 	switch c.Mode {
 	case ModeAll, ModeController:
+		if strings.TrimSpace(c.MorpheusURL) == "" {
+			return errors.New("MORPHEUS_URL is required in controller mode")
+		}
+		if _, err := url.ParseRequestURI(c.MorpheusURL); err != nil {
+			return fmt.Errorf("MORPHEUS_URL is invalid: %w", err)
+		}
+		if strings.TrimSpace(c.MorpheusToken) == "" {
+			return errors.New("MORPHEUS_TOKEN is required in controller mode")
+		}
 	case ModeNode:
 		if strings.TrimSpace(c.NodeID) == "" {
 			return errors.New("node-id is required in node mode")

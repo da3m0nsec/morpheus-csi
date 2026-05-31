@@ -40,7 +40,7 @@ spec:
             - name: registration-dir
               mountPath: /registration
         - name: morpheus-csi-driver
-          image: ghcr.io/morpheusdata/morpheus-csi:dev
+          image: ghcr.io/da3m0nsec/morpheus-csi:dev
           imagePullPolicy: IfNotPresent
           args:
             - --endpoint=$(CSI_ENDPOINT)
