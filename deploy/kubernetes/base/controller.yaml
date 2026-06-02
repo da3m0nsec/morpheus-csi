@@ -86,6 +86,12 @@ spec:
                   name: morpheus-csi-credentials
                   key: MORPHEUS_INSECURE_SKIP_VERIFY
                   optional: true
+            - name: MORPHEUS_DEBUG
+              valueFrom:
+                secretKeyRef:
+                  name: morpheus-csi-credentials
+                  key: MORPHEUS_DEBUG
+                  optional: true
           volumeMounts:
             - name: socket-dir
               mountPath: /csi

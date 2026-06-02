@@ -24,6 +24,7 @@ type Config struct {
 	MorpheusToken              string
 	MorpheusCAFile             string
 	MorpheusInsecureSkipVerify bool
+	MorpheusDebug              bool
 }
 
 func Default() Config {

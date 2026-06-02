@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -77,9 +78,10 @@ type serverState struct {
 }
 
 type Client struct {
-	baseURL    *url.URL
-	token      string
-	httpClient *http.Client
+	baseURL     *url.URL
+	token       string
+	httpClient  *http.Client
+	debugLogger *log.Logger
 }
 
 func NewClient(rawURL string, token string) (*Client, error) {
@@ -124,6 +126,10 @@ func NewClientWithHTTPClient(rawURL string, token string, httpClient *http.Clien
 		httpClient = &http.Client{Timeout: 60 * time.Second}
 	}
 	return &Client{baseURL: parsed, token: token, httpClient: httpClient}, nil
+}
+
+func (c *Client) SetDebugLogger(logger *log.Logger) {
+	c.debugLogger = logger
 }
 
 func EncodeVolumeID(serverID string, volumeID string) string {
@@ -385,12 +391,14 @@ func (c *Client) do(ctx context.Context, method string, path string, query url.V
 	target.RawQuery = query.Encode()
 
 	var reader io.Reader
+	var encodedBody []byte
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
 			return err
 		}
-		reader = bytes.NewReader(encoded)
+		encodedBody = encoded
+		reader = bytes.NewReader(encodedBody)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, target.String(), reader)
@@ -415,6 +423,7 @@ func (c *Client) do(ctx context.Context, method string, path string, query url.V
 	if err != nil {
 		return err
 	}
+	c.logHTTP(method, target, resp.StatusCode, encodedBody, data)
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return apiError{statusCode: resp.StatusCode, body: strings.TrimSpace(string(data))}
 	}
@@ -422,6 +431,28 @@ func (c *Client) do(ctx context.Context, method string, path string, query url.V
 		return nil
 	}
 	return json.Unmarshal(data, out)
+}
+
+func (c *Client) logHTTP(method string, target url.URL, statusCode int, requestBody []byte, responseBody []byte) {
+	if c.debugLogger == nil {
+		return
+	}
+	request := strings.TrimSpace(string(requestBody))
+	response := strings.TrimSpace(string(responseBody))
+	if request == "" {
+		request = "<empty>"
+	}
+	if response == "" {
+		response = "<empty>"
+	}
+	c.debugLogger.Printf(
+		"morpheus api %s %s status=%d request=%s response=%s",
+		method,
+		target.RequestURI(),
+		statusCode,
+		request,
+		response,
+	)
 }
 
 func parseVolumeList(server map[string]any) []StorageVolume {

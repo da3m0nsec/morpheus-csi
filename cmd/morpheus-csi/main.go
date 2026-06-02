@@ -28,6 +28,7 @@ func main() {
 	cfg.MorpheusToken = os.Getenv("MORPHEUS_TOKEN")
 	cfg.MorpheusCAFile = os.Getenv("MORPHEUS_CA_FILE")
 	cfg.MorpheusInsecureSkipVerify, _ = strconv.ParseBool(os.Getenv("MORPHEUS_INSECURE_SKIP_VERIFY"))
+	cfg.MorpheusDebug, _ = strconv.ParseBool(os.Getenv("MORPHEUS_DEBUG"))
 
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("invalid configuration: %v", err)

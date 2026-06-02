@@ -42,6 +42,9 @@ func New(cfg config.Config, logger *log.Logger) *Driver {
 		if err != nil && logger != nil {
 			logger.Printf("invalid Morpheus client configuration: %v", err)
 		}
+		if err == nil && cfg.MorpheusDebug && logger != nil {
+			client.SetDebugLogger(logger)
+		}
 	}
 
 	return &Driver{
