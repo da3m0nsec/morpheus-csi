@@ -6,9 +6,9 @@ CSI driver MVP for provisioning Morpheus-backed storage in Kubernetes.
 
 - Kubernetes deployment manifests live in `deploy/kubernetes/`.
 - The Go driver exposes CSI Identity, Controller, and Node services.
-- Controller RPCs use Morpheus instance resize to add, remove, and grow data volumes on a manually selected Kubernetes node instance.
+- Controller RPCs use Morpheus server resize to add, remove, and grow data volumes on a manually selected Kubernetes node server.
 - Node RPCs support staged filesystem mounts and pod bind mounts for block devices.
-- Before using against a real cluster, validate the exact Morpheus instance resize payload and confirm that instance volume details include `morpheus.devicePath` or another device path mapping.
+- Before using against a real cluster, validate the exact Morpheus server resize payload and confirm that server volume details include `morpheus.devicePath` or another device path mapping.
 
 ## Build
 

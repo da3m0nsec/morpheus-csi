@@ -50,8 +50,9 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 		return nil, status.Errorf(codes.Internal, "create Morpheus storage volume: %v", err)
 	}
 
+	serverID := morpheus.StorageClassServerID(req.GetParameters())
 	context := map[string]string{
-		morpheus.VolumeContextInstanceID: req.GetParameters()[morpheus.ParamInstanceID],
+		morpheus.VolumeContextServerID:   serverID,
 		morpheus.VolumeContextVolumeName: volume.Name,
 	}
 	if volume.DevicePath != "" {
@@ -62,7 +63,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 	}
 	return &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
-			VolumeId:      morpheus.EncodeVolumeID(req.GetParameters()[morpheus.ParamInstanceID], volume.ID),
+			VolumeId:      morpheus.EncodeVolumeID(serverID, volume.ID),
 			CapacityBytes: sizeGiB * gibibyte,
 			VolumeContext: context,
 		},
@@ -78,7 +79,7 @@ func (d *Driver) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest)
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if err := d.volumes.DeleteVolume(ctx, ref); err != nil {
-		return nil, status.Errorf(codes.Internal, "delete Morpheus instance volume: %v", err)
+		return nil, status.Errorf(codes.Internal, "delete Morpheus server volume: %v", err)
 	}
 	return &csi.DeleteVolumeResponse{}, nil
 }
@@ -94,16 +95,16 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 	if strings.TrimSpace(req.GetNodeId()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "node id is required")
 	}
-	if contextInstance := strings.TrimSpace(req.GetVolumeContext()[morpheus.VolumeContextInstanceID]); contextInstance != "" && contextInstance != ref.InstanceID {
-		return nil, status.Errorf(codes.FailedPrecondition, "volume instance %q does not match context instance %q", ref.InstanceID, contextInstance)
+	if contextServer := strings.TrimSpace(req.GetVolumeContext()[morpheus.VolumeContextServerID]); contextServer != "" && contextServer != ref.ServerID {
+		return nil, status.Errorf(codes.FailedPrecondition, "volume server %q does not match context server %q", ref.ServerID, contextServer)
 	}
 	volume, err := d.volumes.GetVolume(ctx, ref)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "get Morpheus instance volume: %v", err)
+		return nil, status.Errorf(codes.Internal, "get Morpheus server volume: %v", err)
 	}
 
 	publishContext := map[string]string{
-		morpheus.VolumeContextInstanceID: ref.InstanceID,
+		morpheus.VolumeContextServerID:   ref.ServerID,
 		morpheus.VolumeContextVolumeName: volume.Name,
 	}
 	if volume != nil && volume.DevicePath != "" {
@@ -146,11 +147,11 @@ func (d *Driver) ControllerExpandVolume(ctx context.Context, req *csi.Controller
 		SizeGiB:  sizeGiB,
 		VolumeID: ref.VolumeID,
 		StorageClass: map[string]string{
-			morpheus.ParamInstanceID: ref.InstanceID,
+			morpheus.ParamServerID: ref.ServerID,
 		},
 	})
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "expand Morpheus instance volume: %v", err)
+		return nil, status.Errorf(codes.Internal, "expand Morpheus server volume: %v", err)
 	}
 	return &csi.ControllerExpandVolumeResponse{
 		CapacityBytes:         volume.SizeGiB * gibibyte,

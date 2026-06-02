@@ -15,28 +15,28 @@ Sources:
 - <https://apidocs.morpheusdata.com/reference/listclustervolumes>
 - <https://apidocs.morpheusdata.com/reference/deleteclustervolume>
 
-## Primary Candidate: Instance Resize
+## Primary Candidate: Server Resize
 
-The first implementation uses instance resize as the primary storage operation:
+The first implementation uses server resize as the primary storage operation:
 
 ```http
-GET /api/instances/{id}?details=true
-PUT /api/instances/{id}/resize
+GET /api/servers/{id}?details=true
+PUT /api/servers/{id}/resize
 ```
 
-The Kubernetes `StorageClass` carries the manually selected Morpheus instance ID for the first single-node test. The driver reads the current instance volumes, appends or grows a non-root data volume named after the PVC, and sends the full volume list back through resize.
+The Kubernetes `StorageClass` carries the manually selected Morpheus server ID for the first single-node test. The driver reads the current server volumes, appends or grows a non-root data volume named after the PVC, and sends the full volume list back through resize.
 
 Likely CSI `StorageClass` parameters:
 
 ```yaml
 parameters:
-  morpheus.instanceId: "12"
+  morpheus.serverId: "12"
   morpheus.storageTypeId: "4"
   morpheus.datastoreId: "5"
   morpheus.deleteOriginalVolumes: "false"
 ```
 
-CSI `VolumeId` is encoded as `<instanceID>:<volumeID>` so later delete, publish, and expand calls can operate only on the instance that originally received the volume.
+CSI `VolumeId` is encoded as `<serverID>:<volumeID>` so later delete, publish, and expand calls can operate only on the server that originally received the volume.
 
 ## Earlier Candidate: Storage Volumes
 
@@ -173,7 +173,7 @@ Likely options:
 
 - Node annotation containing Morpheus server ID.
 - Driver startup config mapping Kubernetes node names to Morpheus server IDs.
-- Morpheus lookup by hostname, UUID, or cloud instance metadata.
+- Morpheus lookup by hostname, UUID, or cloud server metadata.
 
 ### `ControllerUnpublishVolume`
 
@@ -217,7 +217,7 @@ These look like Morpheus views of Kubernetes cluster resources rather than the g
 ## Implemented Morpheus Client Interfaces
 
 ```go
-type InstanceVolumeClient interface {
+type ServerVolumeClient interface {
     EnsureVolume(ctx context.Context, req ResizeVolumeRequest) (*StorageVolume, error)
     DeleteVolume(ctx context.Context, ref VolumeRef) error
     ExpandVolume(ctx context.Context, req ResizeVolumeRequest) (*StorageVolume, error)
@@ -229,7 +229,7 @@ type StorageDiscoveryClient interface {
 }
 ```
 
-The first implementation keeps the Morpheus instance ID in `StorageClass` and encodes CSI volume IDs as `<instanceID>:<volumeID>`.
+The first implementation keeps the Morpheus server ID in `StorageClass` and encodes CSI volume IDs as `<serverID>:<volumeID>`.
 
 ## StorageClass Draft
 
@@ -243,7 +243,7 @@ reclaimPolicy: Delete
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 parameters:
-  morpheus.instanceId: "12"
+  morpheus.serverId: "12"
   morpheus.storageTypeId: "4"
   morpheus.datastoreId: "5"
   morpheus.deleteOriginalVolumes: "false"
@@ -257,9 +257,9 @@ parameters:
 ## Open Items
 
 - Capture actual request and response payloads for:
-  - `GET /api/instances/{id}?details=true`
-  - `PUT /api/instances/{id}/resize`
+  - `GET /api/servers/{id}?details=true`
+  - `PUT /api/servers/{id}/resize`
 - Confirm whether volume size is expressed in bytes, MiB, GiB, or backend-specific units.
 - Confirm which field stores a stable external ID/name usable for CSI idempotency.
-- Confirm which instance volume field, if any, exposes the node device path after resize.
-- Confirm the future node mapping from Kubernetes nodes to Morpheus instance IDs.
+- Confirm which server volume field, if any, exposes the node device path after resize.
+- Confirm the future node mapping from Kubernetes nodes to Morpheus server IDs.

@@ -75,7 +75,7 @@ Initial `StorageClass` parameter ideas, pending API confirmation:
 
 ```yaml
 parameters:
-  morpheus.instanceId: "12"
+  morpheus.serverId: "12"
   morpheus.storageTypeId: "4"
   morpheus.datastoreId: "5"
   morpheus.deleteOriginalVolumes: "false"
@@ -113,10 +113,10 @@ parameters:
 
 ## Open Questions Before Implementation
 
-- Which Morpheus instance, storage type, and datastore will be supported first?
+- Which Morpheus server, storage type, and datastore will be supported first?
 - Which transport reaches the node: iSCSI, NFS, vSphere disk, cloud disk, or another Morpheus abstraction?
-- Does `PUT /api/instances/{id}/resize` return enough volume/device metadata for the node to mount directly?
-- How do Kubernetes node names map to Morpheus instances after the first manual-instance test?
+- Does `PUT /api/servers/{id}/resize` return enough volume/device metadata for the node to mount directly?
+- How do Kubernetes node names map to Morpheus server IDs after the first manual-server test?
 - What minimum Kubernetes version do we target?
 - What Morpheus version do we target first?
 

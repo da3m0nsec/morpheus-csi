@@ -24,7 +24,7 @@ type Driver struct {
 	cfg    config.Config
 	logger *log.Logger
 
-	volumes   morpheus.InstanceVolumeClient
+	volumes   morpheus.ServerVolumeClient
 	discovery morpheus.StorageDiscoveryClient
 	mounter   Mounter
 }
@@ -56,7 +56,7 @@ func New(cfg config.Config, logger *log.Logger) *Driver {
 func NewWithDependencies(
 	cfg config.Config,
 	logger *log.Logger,
-	volumes morpheus.InstanceVolumeClient,
+	volumes morpheus.ServerVolumeClient,
 	discovery morpheus.StorageDiscoveryClient,
 	mounter Mounter,
 ) *Driver {

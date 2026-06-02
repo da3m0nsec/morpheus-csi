@@ -4,7 +4,7 @@ This overlay is the intended edit point for a first deployment.
 
 1. Copy `secret.env.example` to `secret.env`.
 2. Edit `secret.env` with the Morpheus URL and API token.
-3. Edit `storageclass.yaml` with the Morpheus instance, storage type, and datastore IDs.
+3. Edit `storageclass.yaml` with the Morpheus server, storage type, and datastore IDs.
 4. Optionally edit image tags in `kustomization.yaml`.
 5. Deploy with `kubectl apply -k deploy/kubernetes/overlays/example`.
 

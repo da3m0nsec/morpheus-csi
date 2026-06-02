@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func TestCreateVolumeEnsuresInstanceVolume(t *testing.T) {
+func TestCreateVolumeEnsuresServerVolume(t *testing.T) {
 	fake := &fakeMorpheus{
 		volume: &morpheus.StorageVolume{
 			ID:      "test-volume-never-real",
@@ -27,7 +27,7 @@ func TestCreateVolumeEnsuresInstanceVolume(t *testing.T) {
 		Name:          "pvc-123",
 		CapacityRange: &csi.CapacityRange{RequiredBytes: 10 * gibibyte},
 		Parameters: map[string]string{
-			morpheus.ParamInstanceID:    "test-instance-never-real",
+			morpheus.ParamServerID:      "test-server-never-real",
 			"csi.storage.k8s.io/fstype": "ext4",
 		},
 		VolumeCapabilities: []*csi.VolumeCapability{mountCapability()},
@@ -35,15 +35,15 @@ func TestCreateVolumeEnsuresInstanceVolume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateVolume returned error: %v", err)
 	}
-	if resp.GetVolume().GetVolumeId() != "test-instance-never-real:test-volume-never-real" {
-		t.Fatalf("expected encoded volume id test-instance-never-real:test-volume-never-real, got %q", resp.GetVolume().GetVolumeId())
+	if resp.GetVolume().GetVolumeId() != "test-server-never-real:test-volume-never-real" {
+		t.Fatalf("expected encoded volume id test-server-never-real:test-volume-never-real, got %q", resp.GetVolume().GetVolumeId())
 	}
 	if fake.ensureRequest.SizeGiB != 10 {
 		t.Fatalf("expected size 10GiB, got %dGiB", fake.ensureRequest.SizeGiB)
 	}
 }
 
-func TestCreateVolumeRejectsMissingInstanceID(t *testing.T) {
+func TestCreateVolumeRejectsMissingServerID(t *testing.T) {
 	fake := &fakeMorpheus{}
 	driver := NewWithDependencies(config.Default(), log.Default(), fake, fake, &fakeMounter{})
 
@@ -60,20 +60,20 @@ func TestCreateVolumeRejectsMissingInstanceID(t *testing.T) {
 	}
 }
 
-func TestDeleteVolumeParsesInstanceVolumeID(t *testing.T) {
+func TestDeleteVolumeParsesServerVolumeID(t *testing.T) {
 	fake := &fakeMorpheus{}
 	driver := NewWithDependencies(config.Default(), log.Default(), fake, fake, &fakeMounter{})
 
-	_, err := driver.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: "test-instance-never-real:test-volume-never-real"})
+	_, err := driver.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: "test-server-never-real:test-volume-never-real"})
 	if err != nil {
 		t.Fatalf("DeleteVolume returned error: %v", err)
 	}
-	if fake.deletedRef != (morpheus.VolumeRef{InstanceID: "test-instance-never-real", VolumeID: "test-volume-never-real"}) {
+	if fake.deletedRef != (morpheus.VolumeRef{ServerID: "test-server-never-real", VolumeID: "test-volume-never-real"}) {
 		t.Fatalf("unexpected deleted ref: %+v", fake.deletedRef)
 	}
 }
 
-func TestControllerPublishReturnsDevicePathFromInstanceVolume(t *testing.T) {
+func TestControllerPublishReturnsDevicePathFromServerVolume(t *testing.T) {
 	fake := &fakeMorpheus{
 		volume: &morpheus.StorageVolume{
 			ID:         "test-volume-never-real",
@@ -84,10 +84,10 @@ func TestControllerPublishReturnsDevicePathFromInstanceVolume(t *testing.T) {
 	driver := NewWithDependencies(config.Default(), log.Default(), fake, fake, &fakeMounter{})
 
 	resp, err := driver.ControllerPublishVolume(context.Background(), &csi.ControllerPublishVolumeRequest{
-		VolumeId: "test-instance-never-real:test-volume-never-real",
+		VolumeId: "test-server-never-real:test-volume-never-real",
 		NodeId:   "worker-1",
 		VolumeContext: map[string]string{
-			morpheus.VolumeContextInstanceID: "test-instance-never-real",
+			morpheus.VolumeContextServerID: "test-server-never-real",
 		},
 	})
 	if err != nil {
@@ -98,14 +98,14 @@ func TestControllerPublishReturnsDevicePathFromInstanceVolume(t *testing.T) {
 	}
 }
 
-func TestControllerExpandVolumeUsesInstanceResize(t *testing.T) {
+func TestControllerExpandVolumeUsesServerResize(t *testing.T) {
 	fake := &fakeMorpheus{
 		volume: &morpheus.StorageVolume{ID: "test-volume-never-real", Name: "pvc-123", SizeGiB: 20},
 	}
 	driver := NewWithDependencies(config.Default(), log.Default(), fake, fake, &fakeMounter{})
 
 	resp, err := driver.ControllerExpandVolume(context.Background(), &csi.ControllerExpandVolumeRequest{
-		VolumeId:         "test-instance-never-real:test-volume-never-real",
+		VolumeId:         "test-server-never-real:test-volume-never-real",
 		CapacityRange:    &csi.CapacityRange{RequiredBytes: 20 * gibibyte},
 		VolumeCapability: mountCapability(),
 	})
@@ -115,7 +115,7 @@ func TestControllerExpandVolumeUsesInstanceResize(t *testing.T) {
 	if !resp.GetNodeExpansionRequired() {
 		t.Fatal("expected node expansion to be required")
 	}
-	if fake.expandRequest.VolumeID != "test-volume-never-real" || fake.expandRequest.StorageClass[morpheus.ParamInstanceID] != "test-instance-never-real" {
+	if fake.expandRequest.VolumeID != "test-volume-never-real" || fake.expandRequest.StorageClass[morpheus.ParamServerID] != "test-server-never-real" {
 		t.Fatalf("unexpected expand request: %+v", fake.expandRequest)
 	}
 }
@@ -124,7 +124,7 @@ func TestNodeStageRequiresDevicePath(t *testing.T) {
 	driver := NewWithDependencies(config.Config{NodeID: "worker-1"}, log.Default(), nil, nil, &fakeMounter{})
 
 	_, err := driver.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
-		VolumeId:          "test-instance-never-real:test-volume-never-real",
+		VolumeId:          "test-server-never-real:test-volume-never-real",
 		StagingTargetPath: "/var/lib/kubelet/plugins/kubernetes.io/csi/pv/42/globalmount",
 		VolumeCapability:  mountCapability(),
 	})
@@ -138,7 +138,7 @@ func TestNodeExpandVolumeCallsMounter(t *testing.T) {
 	driver := NewWithDependencies(config.Config{NodeID: "worker-1"}, log.Default(), nil, nil, mounter)
 
 	_, err := driver.NodeExpandVolume(context.Background(), &csi.NodeExpandVolumeRequest{
-		VolumeId:         "test-instance-never-real:test-volume-never-real",
+		VolumeId:         "test-server-never-real:test-volume-never-real",
 		VolumePath:       "/var/lib/kubelet/pods/pod/volumes/kubernetes.io~csi/pv/mount",
 		CapacityRange:    &csi.CapacityRange{RequiredBytes: 20 * gibibyte},
 		VolumeCapability: mountCapability(),
@@ -210,8 +210,8 @@ func (f *fakeMorpheus) GetVolume(context.Context, morpheus.VolumeRef) (*morpheus
 }
 
 func (f *fakeMorpheus) ValidateStorageClass(_ context.Context, parameters map[string]string) error {
-	if parameters[morpheus.ParamInstanceID] == "" {
-		return errors.New("instance id is required")
+	if parameters[morpheus.ParamServerID] == "" {
+		return errors.New("server id is required")
 	}
 	return nil
 }

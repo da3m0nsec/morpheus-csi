@@ -10,7 +10,7 @@ reclaimPolicy: Delete
 volumeBindingMode: Immediate
 allowVolumeExpansion: true
 parameters:
-  morpheus.instanceId: "replace-with-k8s-node-morpheus-instance-id"
+  morpheus.serverId: "replace-with-k8s-node-morpheus-server-id"
   morpheus.storageTypeId: "replace-with-storage-type-id"
   morpheus.datastoreId: "replace-with-datastore-id"
   morpheus.deleteOriginalVolumes: "false"
