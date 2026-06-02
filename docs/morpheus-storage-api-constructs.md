@@ -24,7 +24,7 @@ GET /api/servers/{id}?details=true
 PUT /api/servers/{id}/resize
 ```
 
-The Kubernetes `StorageClass` carries the manually selected Morpheus server ID for the first single-node test. The driver reads the current server volumes, appends or grows a non-root data volume named after the PVC, and sends the full volume list back through resize.
+The Kubernetes `StorageClass` carries the manually selected Morpheus server ID for the first single-node test. The driver reads the current server volumes for idempotency, then sends only the target non-root data volume through resize. New volumes use `id: -1`.
 
 Likely CSI `StorageClass` parameters:
 
@@ -33,7 +33,6 @@ parameters:
   morpheus.serverId: "12"
   morpheus.storageType: "38"
   morpheus.datastoreId: "5"
-  morpheus.deleteOriginalVolumes: "false"
 ```
 
 CSI `VolumeId` is encoded as `<serverID>:<volumeID>` so later delete, publish, and expand calls can operate only on the server that originally received the volume.
@@ -246,7 +245,6 @@ parameters:
   morpheus.serverId: "12"
   morpheus.storageType: "38"
   morpheus.datastoreId: "5"
-  morpheus.deleteOriginalVolumes: "false"
   csi.storage.k8s.io/fstype: ext4
   csi.storage.k8s.io/provisioner-secret-name: morpheus-csi-credentials
   csi.storage.k8s.io/provisioner-secret-namespace: morpheus-csi
@@ -259,7 +257,7 @@ parameters:
 - Capture actual request and response payloads for:
   - `GET /api/servers/{id}?details=true`
   - `PUT /api/servers/{id}/resize`
-- Confirm all accepted size fields. Current implementation sends `maxStorage` and `size` as bytes, and `sizeGiB` as GiB.
+- Confirm all accepted size fields. Current implementation sends `size` as GiB in the top-level resize `volumes` payload.
 - Confirm which field stores a stable external ID/name usable for CSI idempotency.
 - Confirm which server volume field, if any, exposes the node device path after resize.
 - Confirm the future node mapping from Kubernetes nodes to Morpheus server IDs.

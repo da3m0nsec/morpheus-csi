@@ -78,7 +78,6 @@ parameters:
   morpheus.serverId: "12"
   morpheus.storageType: "38"
   morpheus.datastoreId: "5"
-  morpheus.deleteOriginalVolumes: "false"
   csi.storage.k8s.io/fstype: ext4
   csi.storage.k8s.io/provisioner-secret-name: morpheus-csi-credentials
   csi.storage.k8s.io/provisioner-secret-namespace: morpheus-csi

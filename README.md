@@ -10,13 +10,14 @@ CSI driver MVP for provisioning Morpheus-backed storage in Kubernetes.
 - Node RPCs support staged filesystem mounts and pod bind mounts for block devices.
 - Before using against a real cluster, validate the exact Morpheus server resize payload and confirm that server volume details include `morpheus.devicePath` or another device path mapping.
 
-## Build
+## Development
 
 ```sh
 go test ./...
 go build ./cmd/morpheus-csi
-docker build -t ghcr.io/da3m0nsec/morpheus-csi:main .
 ```
+
+Container image builds and pushes to `ghcr.io/da3m0nsec/morpheus-csi:main` are handled by GitHub Actions.
 
 ## Deploy
 
