@@ -219,6 +219,7 @@ func (f *fakeMorpheus) ValidateStorageClass(_ context.Context, parameters map[st
 type fakeMounter struct {
 	expandCalled bool
 	expandPath   string
+	rescanCalled bool
 }
 
 func (f *fakeMounter) Stage(context.Context, string, string, string, bool) error {
@@ -236,5 +237,10 @@ func (f *fakeMounter) Unmount(context.Context, string) error {
 func (f *fakeMounter) ExpandFilesystem(_ context.Context, volumePath string, _ string) error {
 	f.expandCalled = true
 	f.expandPath = volumePath
+	return nil
+}
+
+func (f *fakeMounter) RescanDevices(context.Context) error {
+	f.rescanCalled = true
 	return nil
 }

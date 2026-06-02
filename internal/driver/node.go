@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -39,9 +40,12 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	if req.GetVolumeCapability() == nil || req.GetVolumeCapability().GetMount() == nil {
 		return nil, status.Error(codes.InvalidArgument, "mount volume capability is required")
 	}
+	if err := d.mounter.RescanDevices(ctx); err != nil {
+		return nil, status.Errorf(codes.Internal, "rescan node devices before staging Morpheus volume %q: %v", volumeID, err)
+	}
 	devicePath := devicePath(req.GetPublishContext(), req.GetVolumeContext())
 	if devicePath == "" {
-		return nil, status.Error(codes.FailedPrecondition, "Morpheus attach response did not include morpheus.devicePath")
+		return nil, status.Error(codes.FailedPrecondition, "Morpheus attach response did not include morpheus.devicePath after node SCSI rescan")
 	}
 	fsType := filesystemType(req.GetVolumeCapability(), req.GetVolumeContext())
 	if err := d.mounter.Stage(ctx, devicePath, stagingPath, fsType, false); err != nil {
@@ -136,6 +140,7 @@ type Mounter interface {
 	BindMount(ctx context.Context, source string, target string, readOnly bool) error
 	Unmount(ctx context.Context, target string) error
 	ExpandFilesystem(ctx context.Context, volumePath string, fsType string) error
+	RescanDevices(ctx context.Context) error
 }
 
 type realMounter struct{}
@@ -222,6 +227,34 @@ func (realMounter) ExpandFilesystem(ctx context.Context, volumePath string, fsTy
 	default:
 		return fmtMountError("expand filesystem", errors.New("unsupported filesystem type "+fsType))
 	}
+}
+
+func (realMounter) RescanDevices(ctx context.Context) error {
+	if err := rescanSCSIHosts(); err != nil {
+		return err
+	}
+	return settleUdev(ctx)
+}
+
+func rescanSCSIHosts() error {
+	paths, err := filepath.Glob("/sys/class/scsi_host/host*/scan")
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, path := range paths {
+		if err := os.WriteFile(path, []byte("- - -"), 0200); err != nil {
+			errs = append(errs, fmtMountError(path, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func settleUdev(ctx context.Context) error {
+	if _, err := exec.LookPath("udevadm"); err != nil {
+		return nil
+	}
+	return run(ctx, "udevadm", "settle")
 }
 
 func devicePath(maps ...map[string]string) string {

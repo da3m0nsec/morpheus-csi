@@ -82,6 +82,8 @@ spec:
               mountPropagation: Bidirectional
             - name: device-dir
               mountPath: /dev
+            - name: sys-dir
+              mountPath: /sys
         - name: liveness-probe
           image: registry.k8s.io/sig-storage/livenessprobe:v2.19.0
           args:
@@ -119,4 +121,8 @@ spec:
         - name: device-dir
           hostPath:
             path: /dev
+            type: Directory
+        - name: sys-dir
+          hostPath:
+            path: /sys
             type: Directory
