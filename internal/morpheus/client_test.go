@@ -85,8 +85,8 @@ func TestEnsureVolumeAddsMissingVolumeViaResize(t *testing.T) {
 		Name:    "pvc-123",
 		SizeGiB: 10,
 		StorageClass: map[string]string{
-			ParamServerID:     "test-server-never-real",
-			ParamStorageTypeID: "5",
+			ParamServerID:    "test-server-never-real",
+			ParamStorageType: "38",
 		},
 	})
 	if err != nil {
@@ -98,6 +98,13 @@ func TestEnsureVolumeAddsMissingVolumeViaResize(t *testing.T) {
 	volumes := resizePayload["server"].(map[string]any)["volumes"].([]any)
 	if len(volumes) != 2 {
 		t.Fatalf("expected resize payload to contain root plus new volume, got %d", len(volumes))
+	}
+	newVolume := volumes[1].(map[string]any)
+	if newVolume["maxStorage"] != float64(10*1024*1024*1024) {
+		t.Fatalf("expected maxStorage to be 10GiB in bytes, got %#v", newVolume["maxStorage"])
+	}
+	if newVolume["storageType"] != float64(38) {
+		t.Fatalf("expected storageType 38, got %#v", newVolume["storageType"])
 	}
 }
 
@@ -157,6 +164,20 @@ func TestExpandVolumeRejectsShrink(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected shrink to be rejected")
+	}
+}
+
+func TestParseVolumeConvertsMaxStorageBytesToGiB(t *testing.T) {
+	volume := parseVolume(map[string]any{
+		"id":         "test-volume-never-real",
+		"name":       "pvc-123",
+		"maxStorage": float64(10 * 1024 * 1024 * 1024),
+	})
+	if volume == nil {
+		t.Fatal("expected volume to parse")
+	}
+	if volume.SizeGiB != 10 {
+		t.Fatalf("expected 10GiB, got %dGiB", volume.SizeGiB)
 	}
 }
 

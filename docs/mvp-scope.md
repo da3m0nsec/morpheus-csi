@@ -76,7 +76,7 @@ Initial `StorageClass` parameter ideas, pending API confirmation:
 ```yaml
 parameters:
   morpheus.serverId: "12"
-  morpheus.storageTypeId: "4"
+  morpheus.storageType: "38"
   morpheus.datastoreId: "5"
   morpheus.deleteOriginalVolumes: "false"
   csi.storage.k8s.io/fstype: ext4

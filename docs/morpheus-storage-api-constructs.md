@@ -31,7 +31,7 @@ Likely CSI `StorageClass` parameters:
 ```yaml
 parameters:
   morpheus.serverId: "12"
-  morpheus.storageTypeId: "4"
+  morpheus.storageType: "38"
   morpheus.datastoreId: "5"
   morpheus.deleteOriginalVolumes: "false"
 ```
@@ -244,7 +244,7 @@ volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 parameters:
   morpheus.serverId: "12"
-  morpheus.storageTypeId: "4"
+  morpheus.storageType: "38"
   morpheus.datastoreId: "5"
   morpheus.deleteOriginalVolumes: "false"
   csi.storage.k8s.io/fstype: ext4
@@ -259,7 +259,7 @@ parameters:
 - Capture actual request and response payloads for:
   - `GET /api/servers/{id}?details=true`
   - `PUT /api/servers/{id}/resize`
-- Confirm whether volume size is expressed in bytes, MiB, GiB, or backend-specific units.
+- Confirm all accepted size fields. Current implementation sends `maxStorage` and `size` as bytes, and `sizeGiB` as GiB.
 - Confirm which field stores a stable external ID/name usable for CSI idempotency.
 - Confirm which server volume field, if any, exposes the node device path after resize.
 - Confirm the future node mapping from Kubernetes nodes to Morpheus server IDs.

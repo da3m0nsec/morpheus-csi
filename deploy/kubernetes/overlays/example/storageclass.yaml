@@ -11,7 +11,7 @@ volumeBindingMode: Immediate
 allowVolumeExpansion: true
 parameters:
   morpheus.serverId: "replace-with-k8s-node-morpheus-server-id"
-  morpheus.storageTypeId: "replace-with-storage-type-id"
+  morpheus.storageType: "38"
   morpheus.datastoreId: "replace-with-datastore-id"
   morpheus.deleteOriginalVolumes: "false"
   csi.storage.k8s.io/fstype: ext4

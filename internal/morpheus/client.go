@@ -21,6 +21,7 @@ const (
 	ParamServerID              = "morpheus.serverId"
 	legacyParamHostID          = "morpheus.hostId"
 	legacyParamInstanceID      = "morpheus.instanceId"
+	ParamStorageType           = "morpheus.storageType"
 	ParamStorageTypeID         = "morpheus.storageTypeId"
 	ParamDatastoreID           = "morpheus.datastoreId"
 	ParamDeleteOriginalVolumes = "morpheus.deleteOriginalVolumes"
@@ -29,6 +30,9 @@ const (
 	VolumeContextServerID   = "morpheus.serverId"
 	VolumeContextVolumeName = "morpheus.volumeName"
 	VolumeContextDevicePath = "morpheus.devicePath"
+
+	defaultStorageType = "38"
+	bytesPerGiB        = 1024 * 1024 * 1024
 )
 
 type StorageVolume struct {
@@ -250,7 +254,7 @@ func (c *Client) resizeVolume(ctx context.Context, serverID string, volumes []St
 		if volume.ID == volumeID || (volumeID == "" && volume.Name == req.Name) {
 			volume.Name = firstNonEmpty(req.Name, volume.Name)
 			volume.SizeGiB = req.SizeGiB
-			volume.StorageTypeID = firstNonEmpty(volume.StorageTypeID, req.StorageClass[ParamStorageTypeID])
+			volume.StorageTypeID = firstNonEmpty(volume.StorageTypeID, storageClassStorageType(req.StorageClass))
 			volume.DatastoreID = firstNonEmpty(volume.DatastoreID, req.StorageClass[ParamDatastoreID])
 			found = true
 		}
@@ -261,7 +265,7 @@ func (c *Client) resizeVolume(ctx context.Context, serverID string, volumes []St
 			Name:          req.Name,
 			SizeGiB:       req.SizeGiB,
 			RootVolume:    false,
-			StorageTypeID: req.StorageClass[ParamStorageTypeID],
+			StorageTypeID: storageClassStorageType(req.StorageClass),
 			DatastoreID:   req.StorageClass[ParamDatastoreID],
 		})
 	}
@@ -312,11 +316,12 @@ func (c *Client) getServerVolumes(ctx context.Context, serverID string) ([]Stora
 func resizeVolumesPayload(volumes []StorageVolume) []map[string]any {
 	payload := make([]map[string]any, 0, len(volumes))
 	for _, volume := range volumes {
+		maxStorage := volume.SizeGiB * bytesPerGiB
 		item := map[string]any{
 			"name":       volume.Name,
-			"size":       volume.SizeGiB,
+			"size":       maxStorage,
 			"sizeGiB":    volume.SizeGiB,
-			"maxStorage": volume.SizeGiB,
+			"maxStorage": maxStorage,
 			"rootVolume": volume.RootVolume,
 		}
 		if volume.ID != "" {
@@ -428,6 +433,19 @@ func StorageClassServerID(parameters map[string]string) string {
 	return strings.TrimSpace(parameters[legacyParamInstanceID])
 }
 
+func storageClassStorageType(parameters map[string]string) string {
+	if parameters == nil {
+		return defaultStorageType
+	}
+	if value := strings.TrimSpace(parameters[ParamStorageType]); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(parameters[ParamStorageTypeID]); value != "" {
+		return value
+	}
+	return defaultStorageType
+}
+
 func parseVolume(m map[string]any) *StorageVolume {
 	if len(m) == 0 {
 		return nil
@@ -435,7 +453,7 @@ func parseVolume(m map[string]any) *StorageVolume {
 	volume := &StorageVolume{
 		ID:            stringValue(m["id"]),
 		Name:          stringValue(m["name"]),
-		SizeGiB:       int64Value(firstValue(m, "sizeGiB", "sizeGB", "sizeGb", "maxStorage", "size")),
+		SizeGiB:       storageSizeGiB(m),
 		RootVolume:    boolValue(firstValue(m, "rootVolume", "root", "isRoot")),
 		StorageTypeID: stringValue(firstValue(m, "storageTypeId", "storageType")),
 		DatastoreID:   stringValue(firstValue(m, "datastoreId")),
@@ -535,6 +553,17 @@ func int64Value(value any) int64 {
 	default:
 		return 0
 	}
+}
+
+func storageSizeGiB(values map[string]any) int64 {
+	if value := int64Value(firstValue(values, "sizeGiB", "sizeGB", "sizeGb")); value > 0 {
+		return value
+	}
+	value := int64Value(firstValue(values, "maxStorage", "size"))
+	if value > bytesPerGiB {
+		return (value + bytesPerGiB - 1) / bytesPerGiB
+	}
+	return value
 }
 
 func boolValue(value any) bool {

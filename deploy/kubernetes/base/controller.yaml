@@ -61,7 +61,7 @@ spec:
               mountPath: /csi
         - name: morpheus-csi-driver
           image: ghcr.io/da3m0nsec/morpheus-csi:main
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           args:
             - --endpoint=$(CSI_ENDPOINT)
             - --driver-name=csi.morpheusdata.com
