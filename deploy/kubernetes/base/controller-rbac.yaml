@@ -2,7 +2,6 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: morpheus-csi-controller
-  namespace: morpheus-csi
   labels:
     app.kubernetes.io/name: morpheus-csi
     app.kubernetes.io/component: controller
@@ -63,4 +62,3 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: morpheus-csi-controller
-    namespace: morpheus-csi

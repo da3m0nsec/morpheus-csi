@@ -2,7 +2,6 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: morpheus-csi-node
-  namespace: morpheus-csi
   labels:
     app.kubernetes.io/name: morpheus-csi
     app.kubernetes.io/component: node
@@ -40,7 +39,7 @@ spec:
             - name: registration-dir
               mountPath: /registration
         - name: morpheus-csi-driver
-          image: ghcr.io/da3m0nsec/morpheus-csi:dev
+          image: ghcr.io/da3m0nsec/morpheus-csi:main
           imagePullPolicy: IfNotPresent
           args:
             - --endpoint=$(CSI_ENDPOINT)
@@ -66,6 +65,12 @@ spec:
                 secretKeyRef:
                   name: morpheus-csi-credentials
                   key: MORPHEUS_TOKEN
+            - name: MORPHEUS_INSECURE_SKIP_VERIFY
+              valueFrom:
+                secretKeyRef:
+                  name: morpheus-csi-credentials
+                  key: MORPHEUS_INSECURE_SKIP_VERIFY
+                  optional: true
           securityContext:
             privileged: true
             allowPrivilegeEscalation: true

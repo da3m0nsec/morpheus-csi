@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: morpheus-csi
+resources:
+  - ../../base
+  - namespace.yaml
+  - storageclass.yaml
+generatorOptions:
+  disableNameSuffixHash: true
+  labels:
+    app.kubernetes.io/name: morpheus-csi
+    app.kubernetes.io/component: credentials
+secretGenerator:
+  - name: morpheus-csi-credentials
+    envs:
+      - secret.env
+images:
+  - name: ghcr.io/da3m0nsec/morpheus-csi
+    newName: ghcr.io/da3m0nsec/morpheus-csi
+    newTag: main
+  - name: registry.k8s.io/sig-storage/csi-provisioner
+    newTag: v5.3.0
+  - name: registry.k8s.io/sig-storage/csi-attacher
+    newTag: v4.9.0
+  - name: registry.k8s.io/sig-storage/csi-resizer
+    newTag: v1.13.2
+  - name: registry.k8s.io/sig-storage/csi-node-driver-registrar
+    newTag: v2.14.0
+  - name: registry.k8s.io/sig-storage/livenessprobe
+    newTag: v2.19.0

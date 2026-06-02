@@ -2,7 +2,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: morpheus-csi-controller
-  namespace: morpheus-csi
   labels:
     app.kubernetes.io/name: morpheus-csi
     app.kubernetes.io/component: controller
@@ -61,7 +60,7 @@ spec:
             - name: socket-dir
               mountPath: /csi
         - name: morpheus-csi-driver
-          image: ghcr.io/da3m0nsec/morpheus-csi:dev
+          image: ghcr.io/da3m0nsec/morpheus-csi:main
           imagePullPolicy: IfNotPresent
           args:
             - --endpoint=$(CSI_ENDPOINT)
@@ -81,6 +80,12 @@ spec:
                 secretKeyRef:
                   name: morpheus-csi-credentials
                   key: MORPHEUS_TOKEN
+            - name: MORPHEUS_INSECURE_SKIP_VERIFY
+              valueFrom:
+                secretKeyRef:
+                  name: morpheus-csi-credentials
+                  key: MORPHEUS_INSECURE_SKIP_VERIFY
+                  optional: true
           volumeMounts:
             - name: socket-dir
               mountPath: /csi

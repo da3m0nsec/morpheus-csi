@@ -14,14 +14,16 @@ const (
 )
 
 type Config struct {
-	Endpoint        string
-	DriverName      string
-	Mode            string
-	NodeID          string
-	KubeletRootPath string
-	LogLevel        string
-	MorpheusURL     string
-	MorpheusToken   string
+	Endpoint                   string
+	DriverName                 string
+	Mode                       string
+	NodeID                     string
+	KubeletRootPath            string
+	LogLevel                   string
+	MorpheusURL                string
+	MorpheusToken              string
+	MorpheusCAFile             string
+	MorpheusInsecureSkipVerify bool
 }
 
 func Default() Config {

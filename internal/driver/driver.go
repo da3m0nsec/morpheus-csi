@@ -33,7 +33,12 @@ func New(cfg config.Config, logger *log.Logger) *Driver {
 	var client *morpheus.Client
 	if strings.TrimSpace(cfg.MorpheusURL) != "" && strings.TrimSpace(cfg.MorpheusToken) != "" {
 		var err error
-		client, err = morpheus.NewClient(cfg.MorpheusURL, cfg.MorpheusToken)
+		client, err = morpheus.NewClientWithTLS(
+			cfg.MorpheusURL,
+			cfg.MorpheusToken,
+			cfg.MorpheusCAFile,
+			cfg.MorpheusInsecureSkipVerify,
+		)
 		if err != nil && logger != nil {
 			logger.Printf("invalid Morpheus client configuration: %v", err)
 		}

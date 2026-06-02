@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: morpheus-csi-testpod
+  namespace: default
+  labels:
+    app.kubernetes.io/name: morpheus-csi
+    app.kubernetes.io/component: example
+spec:
+  restartPolicy: Never
+  containers:
+    - name: testpod
+      image: busybox:1.37
+      command:
+        - sh
+        - -c
+        - |
+          set -eu
+          echo "morpheus-csi test write $(date)" > /data/hello.txt
+          cat /data/hello.txt
+          sleep 3600
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: morpheus-csi-test

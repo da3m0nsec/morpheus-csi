@@ -4,7 +4,7 @@ metadata:
   name: morpheus-storage
   labels:
     app.kubernetes.io/name: morpheus-csi
-    app.kubernetes.io/component: example
+    app.kubernetes.io/component: storageclass
 provisioner: csi.morpheusdata.com
 reclaimPolicy: Delete
 volumeBindingMode: Immediate

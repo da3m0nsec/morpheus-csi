@@ -3,12 +3,15 @@ package morpheus
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -67,6 +70,32 @@ type Client struct {
 
 func NewClient(rawURL string, token string) (*Client, error) {
 	return NewClientWithHTTPClient(rawURL, token, &http.Client{Timeout: 60 * time.Second})
+}
+
+func NewClientWithTLS(rawURL string, token string, caFile string, insecureSkipVerify bool) (*Client, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	tlsConfig := &tls.Config{InsecureSkipVerify: insecureSkipVerify} //nolint:gosec // Lab clusters may use self-signed Morpheus certificates.
+
+	if strings.TrimSpace(caFile) != "" {
+		pool, err := x509.SystemCertPool()
+		if err != nil {
+			pool = x509.NewCertPool()
+		}
+		data, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("read Morpheus CA file: %w", err)
+		}
+		if ok := pool.AppendCertsFromPEM(data); !ok {
+			return nil, fmt.Errorf("Morpheus CA file %q did not contain a PEM certificate", caFile)
+		}
+		tlsConfig.RootCAs = pool
+	}
+
+	transport.TLSClientConfig = tlsConfig
+	return NewClientWithHTTPClient(rawURL, token, &http.Client{
+		Timeout:   60 * time.Second,
+		Transport: transport,
+	})
 }
 
 func NewClientWithHTTPClient(rawURL string, token string, httpClient *http.Client) (*Client, error) {

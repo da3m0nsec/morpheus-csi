@@ -160,6 +160,33 @@ func TestExpandVolumeRejectsShrink(t *testing.T) {
 	}
 }
 
+func TestNewClientWithTLSAllowsSelfSignedWhenInsecure(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/instances/test-instance-never-real" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(instanceResponse([]map[string]any{
+			{"id": "test-volume-never-real", "name": "pvc-123", "sizeGiB": 10, "rootVolume": false},
+		}))
+	}))
+	defer server.Close()
+
+	client, err := NewClientWithTLS(server.URL, "token", "", true)
+	if err != nil {
+		t.Fatalf("NewClientWithTLS returned error: %v", err)
+	}
+	volume, err := client.GetVolume(context.Background(), VolumeRef{
+		InstanceID: "test-instance-never-real",
+		VolumeID:   "test-volume-never-real",
+	})
+	if err != nil {
+		t.Fatalf("GetVolume returned error: %v", err)
+	}
+	if volume.ID != "test-volume-never-real" {
+		t.Fatalf("expected sentinel volume id, got %q", volume.ID)
+	}
+}
+
 func instanceResponse(volumes []map[string]any) map[string]any {
 	return map[string]any{
 		"instance": map[string]any{
