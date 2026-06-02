@@ -100,10 +100,14 @@ func TestEnsureVolumeAddsMissingVolumeViaResize(t *testing.T) {
 		t.Fatal("resize payload should not include server")
 	}
 	volumes := resizePayload["volumes"].([]any)
-	if len(volumes) != 1 {
-		t.Fatalf("expected resize payload to contain only the new volume, got %d", len(volumes))
+	if len(volumes) != 2 {
+		t.Fatalf("expected resize payload to contain existing root plus new volume, got %d", len(volumes))
 	}
-	newVolume := volumes[0].(map[string]any)
+	rootVolume := volumes[0].(map[string]any)
+	if rootVolume["id"] != "test-root-volume-never-real" {
+		t.Fatalf("expected existing root volume to be preserved, got %#v", rootVolume["id"])
+	}
+	newVolume := volumes[1].(map[string]any)
 	if newVolume["id"] != float64(-1) {
 		t.Fatalf("expected new volume id -1, got %#v", newVolume["id"])
 	}

@@ -267,27 +267,27 @@ func validateRef(ref VolumeRef) error {
 func (c *Client) resizeVolume(ctx context.Context, state serverState, volumeID string, req ResizeVolumeRequest) (*StorageVolume, error) {
 	volumes := state.Volumes
 	found := false
-	var target StorageVolume
+	next := make([]StorageVolume, 0, len(volumes)+1)
 	for _, volume := range volumes {
 		if volume.ID == volumeID || (volumeID == "" && volume.Name == req.Name) {
 			volume.Name = firstNonEmpty(req.Name, volume.Name)
 			volume.SizeGiB = req.SizeGiB
 			volume.StorageTypeID = firstNonEmpty(volume.StorageTypeID, storageClassStorageType(req.StorageClass))
 			volume.DatastoreID = firstNonEmpty(volume.DatastoreID, req.StorageClass[ParamDatastoreID])
-			target = volume
 			found = true
 		}
+		next = append(next, volume)
 	}
 	if !found {
-		target = StorageVolume{
+		next = append(next, StorageVolume{
 			Name:          req.Name,
 			SizeGiB:       req.SizeGiB,
 			RootVolume:    false,
 			StorageTypeID: storageClassStorageType(req.StorageClass),
 			DatastoreID:   req.StorageClass[ParamDatastoreID],
-		}
+		})
 	}
-	if err := c.resizeServer(ctx, state.ID, []StorageVolume{target}); err != nil {
+	if err := c.resizeServer(ctx, state.ID, next); err != nil {
 		return nil, err
 	}
 

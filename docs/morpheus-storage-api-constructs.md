@@ -24,7 +24,7 @@ GET /api/servers/{id}?details=true
 PUT /api/servers/{id}/resize
 ```
 
-The Kubernetes `StorageClass` carries the manually selected Morpheus server ID for the first single-node test. The driver reads the current server volumes for idempotency, then sends only the target non-root data volume through resize. New volumes use `id: -1`.
+The Kubernetes `StorageClass` carries the manually selected Morpheus server ID for the first single-node test. The driver reads the current server volumes for idempotency, then sends the full desired volume array through resize so existing disks are preserved. New volumes use `id: -1`.
 
 Likely CSI `StorageClass` parameters:
 
