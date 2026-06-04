@@ -509,7 +509,7 @@ func parseVolume(m map[string]any) *StorageVolume {
 		StorageTypeID:        stringValue(firstValue(m, "storageTypeId", "storageType")),
 		DatastoreID:          stringValue(firstValue(m, "datastoreId")),
 		ControllerMountPoint: stringValue(m["controllerMountPoint"]),
-		DevicePath:           stringValue(firstValue(m, "devicePath", "device", "path")),
+		DevicePath:           normalizeDevicePath(stringValue(firstValue(m, "devicePath", "deviceName", "device", "path"))),
 	}
 	if volume.StorageTypeID == "" {
 		volume.StorageTypeID = stringValue(asMap(firstValue(m, "storageType", "type"))["id"])
@@ -518,7 +518,7 @@ func parseVolume(m map[string]any) *StorageVolume {
 		volume.DatastoreID = stringValue(asMap(firstValue(m, "datastore"))["id"])
 	}
 	if volume.DevicePath == "" {
-		volume.DevicePath = stringValue(asMap(firstValue(m, "connectionInfo", "attachment", "mount"))["devicePath"])
+		volume.DevicePath = normalizeDevicePath(stringValue(asMap(firstValue(m, "connectionInfo", "attachment", "mount"))["devicePath"]))
 	}
 	if volume.ID == "" {
 		return nil
@@ -670,6 +670,22 @@ func boolValue(value any) bool {
 	default:
 		return false
 	}
+}
+
+func normalizeDevicePath(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, "/dev/") {
+		return value
+	}
+	for _, prefix := range []string{"sd", "vd", "xvd", "nvme"} {
+		if strings.HasPrefix(value, prefix) {
+			return "/dev/" + value
+		}
+	}
+	return value
 }
 
 func jsonID(value string) any {

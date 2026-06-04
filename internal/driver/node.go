@@ -66,15 +66,28 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 }
 
 func (d *Driver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
+	volumeID := strings.TrimSpace(req.GetVolumeId())
 	stagingPath := strings.TrimSpace(req.GetStagingTargetPath())
-	if strings.TrimSpace(req.GetVolumeId()) == "" {
+	if volumeID == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume id is required")
 	}
 	if stagingPath == "" {
 		return nil, status.Error(codes.InvalidArgument, "staging target path is required")
 	}
+	source, err := d.mounter.MountedSource(ctx, stagingPath)
+	if err != nil && d.logger != nil {
+		d.logger.Printf("could not resolve mounted source for Morpheus volume %q at %s before unstage: %v", volumeID, stagingPath, err)
+	}
 	if err := d.mounter.Unmount(ctx, stagingPath); err != nil {
 		return nil, status.Errorf(codes.Internal, "unstage Morpheus volume: %v", err)
+	}
+	if source != "" {
+		if err := d.mounter.RemoveDevice(ctx, source); err != nil {
+			return nil, status.Errorf(codes.Internal, "remove local Morpheus volume device %q after unstage: %v", source, err)
+		}
+		if d.logger != nil {
+			d.logger.Printf("removed local Morpheus volume %q device %s after unstage", volumeID, source)
+		}
 	}
 	return &csi.NodeUnstageVolumeResponse{}, nil
 }
@@ -149,10 +162,12 @@ func nodeCapability(capability csi.NodeServiceCapability_RPC_Type) *csi.NodeServ
 type Mounter interface {
 	Stage(ctx context.Context, devicePath string, stagingPath string, fsType string, readOnly bool) error
 	BindMount(ctx context.Context, source string, target string, readOnly bool) error
+	MountedSource(ctx context.Context, target string) (string, error)
 	Unmount(ctx context.Context, target string) error
 	ExpandFilesystem(ctx context.Context, volumePath string, fsType string) error
 	RescanDevices(ctx context.Context) error
 	DiscoverDevicePath(ctx context.Context, sizeGiB int64) (string, error)
+	RemoveDevice(ctx context.Context, devicePath string) error
 }
 
 type realMounter struct{}
@@ -210,6 +225,10 @@ func (realMounter) BindMount(ctx context.Context, source string, target string, 
 	return nil
 }
 
+func (realMounter) MountedSource(ctx context.Context, target string) (string, error) {
+	return mountedSource(ctx, target)
+}
+
 func (realMounter) Unmount(ctx context.Context, target string) error {
 	mounted, err := isMounted(target)
 	if err != nil {
@@ -265,6 +284,39 @@ func (realMounter) DiscoverDevicePath(ctx context.Context, sizeGiB int64) (strin
 	return candidates[0], nil
 }
 
+func (realMounter) RemoveDevice(ctx context.Context, devicePath string) error {
+	deviceName, err := removableBlockDeviceName(devicePath)
+	if err != nil {
+		return err
+	}
+	mounted, err := isBlockDeviceMounted(deviceName)
+	if err != nil {
+		return err
+	}
+	if mounted {
+		return fmt.Errorf("refusing to remove mounted block device /dev/%s", deviceName)
+	}
+	deletePath := filepath.Join(sysBlockRoot, deviceName, "device", "delete")
+	if _, err := os.Stat(deletePath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if err := os.WriteFile(deletePath, []byte("1\n"), 0200); err != nil {
+		return fmtMountError(deletePath, err)
+	}
+	return settleUdev(ctx)
+}
+
+var (
+	sysBlockRoot      = "/sys/block"
+	devRoot           = "/dev"
+	devDiskByPathRoot = "/dev/disk/by-path"
+	mountInfoPath     = "/proc/self/mountinfo"
+	hasFilesystemFunc = hasFilesystem
+)
+
 func rescanSCSIHosts() error {
 	paths, err := filepath.Glob("/sys/class/scsi_host/host*/scan")
 	if err != nil {
@@ -283,7 +335,7 @@ func rescanSCSIHosts() error {
 }
 
 func candidateBlockDevices(ctx context.Context, sizeGiB int64) ([]string, error) {
-	entries, err := os.ReadDir("/sys/block")
+	entries, err := os.ReadDir(sysBlockRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -302,8 +354,8 @@ func candidateBlockDevices(ctx context.Context, sizeGiB int64) ([]string, error)
 				continue
 			}
 		}
-		path := "/dev/" + name
-		formatted, err := hasFilesystem(ctx, path)
+		path := filepath.Join(devRoot, name)
+		formatted, err := hasFilesystemFunc(ctx, path)
 		if err != nil {
 			return nil, err
 		}
@@ -332,7 +384,7 @@ func skipBlockDevice(name string) bool {
 }
 
 func hasPartitions(name string) bool {
-	matches, _ := filepath.Glob("/sys/block/" + name + "/" + name + "*")
+	matches, _ := filepath.Glob(filepath.Join(sysBlockRoot, name, name+"*"))
 	for _, match := range matches {
 		if _, err := os.Stat(filepath.Join(match, "partition")); err == nil {
 			return true
@@ -342,7 +394,7 @@ func hasPartitions(name string) bool {
 }
 
 func blockDeviceSizeGiB(name string) (int64, error) {
-	data, err := os.ReadFile("/sys/block/" + name + "/size")
+	data, err := os.ReadFile(filepath.Join(sysBlockRoot, name, "size"))
 	if err != nil {
 		return 0, err
 	}
@@ -355,18 +407,19 @@ func blockDeviceSizeGiB(name string) (int64, error) {
 }
 
 func stableDevicePath(name string) string {
-	matches, _ := filepath.Glob("/dev/disk/by-path/*")
+	devicePath := filepath.Join(devRoot, name)
+	matches, _ := filepath.Glob(filepath.Join(devDiskByPathRoot, "*"))
 	for _, match := range matches {
 		target, err := filepath.EvalSymlinks(match)
-		if err == nil && target == "/dev/"+name {
+		if err == nil && target == devicePath {
 			return match
 		}
 	}
-	return "/dev/" + name
+	return devicePath
 }
 
 func isMountedSource(source string) (bool, error) {
-	data, err := os.ReadFile("/proc/self/mountinfo")
+	data, err := os.ReadFile(mountInfoPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
@@ -375,11 +428,86 @@ func isMountedSource(source string) (bool, error) {
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) >= 10 && fields[len(fields)-2] == source {
+		if len(fields) >= 10 && sameDevicePath(fields[len(fields)-2], source) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+func removableBlockDeviceName(devicePath string) (string, error) {
+	devicePath = strings.TrimSpace(devicePath)
+	if devicePath == "" {
+		return "", errors.New("device path is required")
+	}
+	resolved, err := filepath.EvalSymlinks(devicePath)
+	if err != nil {
+		resolved = filepath.Clean(devicePath)
+	}
+	devRootClean := filepath.Clean(devRoot)
+	if resolved != devRootClean && !strings.HasPrefix(resolved, devRootClean+string(os.PathSeparator)) {
+		return "", fmt.Errorf("refusing to remove non-device path %q", devicePath)
+	}
+	name := filepath.Base(resolved)
+	if name == "." || name == string(os.PathSeparator) || skipBlockDevice(name) {
+		return "", fmt.Errorf("refusing to remove unsafe block device %q", name)
+	}
+	if _, err := os.Stat(filepath.Join(sysBlockRoot, name, "partition")); err == nil {
+		return "", fmt.Errorf("refusing to remove partition device %q", name)
+	}
+	if hasPartitions(name) {
+		return "", fmt.Errorf("refusing to remove partitioned block device %q", name)
+	}
+	if _, err := os.Stat(filepath.Join(sysBlockRoot, name, "device", "delete")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	return name, nil
+}
+
+func isBlockDeviceMounted(deviceName string) (bool, error) {
+	data, err := os.ReadFile(mountInfoPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	devicePath := filepath.Join(devRoot, deviceName)
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 10 {
+			continue
+		}
+		source := fields[len(fields)-2]
+		resolvedSource, err := filepath.EvalSymlinks(source)
+		if err != nil {
+			resolvedSource = filepath.Clean(source)
+		}
+		if sameDevicePath(resolvedSource, devicePath) || isDevicePartition(resolvedSource, devicePath) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func sameDevicePath(left string, right string) bool {
+	return resolveDevicePath(left) == resolveDevicePath(right)
+}
+
+func resolveDevicePath(value string) string {
+	resolved, err := filepath.EvalSymlinks(value)
+	if err != nil {
+		return filepath.Clean(value)
+	}
+	return resolved
+}
+
+func isDevicePartition(source string, devicePath string) bool {
+	if !strings.HasPrefix(source, devicePath) || len(source) == len(devicePath) {
+		return false
+	}
+	suffix := strings.TrimPrefix(source, devicePath)
+	return (suffix[0] >= '0' && suffix[0] <= '9') || suffix[0] == 'p'
 }
 
 func settleUdev(ctx context.Context) error {
@@ -391,13 +519,36 @@ func settleUdev(ctx context.Context) error {
 
 func devicePath(maps ...map[string]string) string {
 	for _, values := range maps {
-		for _, key := range []string{"morpheus.devicePath", "devicePath"} {
+		for _, key := range []string{
+			morpheus.VolumeContextDevicePath,
+			"morpheus.deviceName",
+			"morpheus.device",
+			"devicePath",
+			"deviceName",
+			"device",
+		} {
 			if value := strings.TrimSpace(values[key]); value != "" {
-				return value
+				return normalizeNodeDevicePath(value)
 			}
 		}
 	}
 	return ""
+}
+
+func normalizeNodeDevicePath(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, "/dev/") {
+		return value
+	}
+	for _, prefix := range []string{"sd", "vd", "xvd", "nvme"} {
+		if strings.HasPrefix(value, prefix) {
+			return "/dev/" + value
+		}
+	}
+	return value
 }
 
 func volumeSizeGiB(maps ...map[string]string) int64 {

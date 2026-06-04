@@ -238,6 +238,20 @@ func TestParseVolumeConvertsMaxStorageBytesToGiB(t *testing.T) {
 	}
 }
 
+func TestParseVolumeNormalizesLinuxDeviceName(t *testing.T) {
+	volume := parseVolume(map[string]any{
+		"id":     "test-volume-never-real",
+		"name":   "pvc-123",
+		"device": "sdb",
+	})
+	if volume == nil {
+		t.Fatal("expected volume to parse")
+	}
+	if volume.DevicePath != "/dev/sdb" {
+		t.Fatalf("expected /dev/sdb, got %q", volume.DevicePath)
+	}
+}
+
 func TestNewClientWithTLSAllowsSelfSignedWhenInsecure(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/servers/test-server-never-real" {

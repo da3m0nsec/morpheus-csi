@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"log"
+	"os"
+	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -162,6 +165,98 @@ func TestNodeStageDiscoversDevicePathWhenPublishContextIsMissing(t *testing.T) {
 	}
 }
 
+func TestNodeStageUsesMorpheusProvidedDevicePath(t *testing.T) {
+	mounter := &fakeMounter{discoverPath: "/dev/disk/by-path/should-not-be-used"}
+	driver := NewWithDependencies(config.Config{NodeID: "worker-1"}, log.Default(), nil, nil, mounter)
+
+	_, err := driver.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          "test-server-never-real:test-volume-never-real",
+		StagingTargetPath: "/var/lib/kubelet/plugins/kubernetes.io/csi/pv/42/globalmount",
+		VolumeCapability:  mountCapability(),
+		PublishContext: map[string]string{
+			morpheus.VolumeContextDevicePath: "/dev/sdb",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NodeStageVolume returned error: %v", err)
+	}
+	if !mounter.rescanCalled {
+		t.Fatal("expected node rescan before staging")
+	}
+	if mounter.discoverCalled {
+		t.Fatal("expected discovery to be skipped when Morpheus provided a device path")
+	}
+	if mounter.stageDevicePath != "/dev/sdb" {
+		t.Fatalf("expected Morpheus device path to be staged, got %q", mounter.stageDevicePath)
+	}
+}
+
+func TestCandidateBlockDevicesDiscoversSingleSafeSizeMatch(t *testing.T) {
+	withFakeDeviceTree(t, []fakeBlockDevice{
+		{name: "sdb", sizeGiB: 14},
+		{name: "sdc", sizeGiB: 10},
+	}, "", func(devRoot string) {
+		candidates, err := candidateBlockDevices(context.Background(), 14)
+		if err != nil {
+			t.Fatalf("candidateBlockDevices returned error: %v", err)
+		}
+		expected := filepath.Join(devRoot, "sdb")
+		if len(candidates) != 1 || candidates[0] != expected {
+			t.Fatalf("expected one candidate %q, got %#v", expected, candidates)
+		}
+	})
+}
+
+func TestCandidateBlockDevicesRejectsAmbiguousSizeMatches(t *testing.T) {
+	withFakeDeviceTree(t, []fakeBlockDevice{
+		{name: "sdb", sizeGiB: 14},
+		{name: "sdc", sizeGiB: 14},
+	}, "", func(string) {
+		_, err := realMounter{}.DiscoverDevicePath(context.Background(), 14)
+		if err == nil {
+			t.Fatal("expected ambiguous candidates to fail")
+		}
+	})
+}
+
+func TestCandidateBlockDevicesIgnoresUnsafeDevices(t *testing.T) {
+	withFakeDeviceTree(t, []fakeBlockDevice{
+		{name: "sdb", sizeGiB: 14, partitioned: true},
+		{name: "sdc", sizeGiB: 14, formatted: true},
+		{name: "sdd", sizeGiB: 14},
+		{name: "sr0", sizeGiB: 14},
+		{name: "nbd0", sizeGiB: 14},
+	}, "", func(devRoot string) {
+		candidates, err := candidateBlockDevices(context.Background(), 14)
+		if err != nil {
+			t.Fatalf("candidateBlockDevices returned error: %v", err)
+		}
+		expected := filepath.Join(devRoot, "sdd")
+		if len(candidates) != 1 || candidates[0] != expected {
+			t.Fatalf("expected only safe candidate %q, got %#v", expected, candidates)
+		}
+	})
+}
+
+func TestNodeUnstageUnmountsBeforeRemovingDevice(t *testing.T) {
+	mounter := &fakeMounter{mountedSource: "/dev/sdb"}
+	driver := NewWithDependencies(config.Config{NodeID: "worker-1"}, log.Default(), nil, nil, mounter)
+
+	_, err := driver.NodeUnstageVolume(context.Background(), &csi.NodeUnstageVolumeRequest{
+		VolumeId:          "test-server-never-real:test-volume-never-real",
+		StagingTargetPath: "/var/lib/kubelet/plugins/kubernetes.io/csi/pv/42/globalmount",
+	})
+	if err != nil {
+		t.Fatalf("NodeUnstageVolume returned error: %v", err)
+	}
+	if got := mounter.operations; len(got) != 3 || got[0] != "source" || got[1] != "unmount" || got[2] != "remove" {
+		t.Fatalf("expected source, unmount, remove operations, got %#v", got)
+	}
+	if mounter.removedDevicePath != "/dev/sdb" {
+		t.Fatalf("expected /dev/sdb to be removed, got %q", mounter.removedDevicePath)
+	}
+}
+
 func TestNodeExpandVolumeCallsMounter(t *testing.T) {
 	mounter := &fakeMounter{}
 	driver := NewWithDependencies(config.Config{NodeID: "worker-1"}, log.Default(), nil, nil, mounter)
@@ -249,10 +344,14 @@ type fakeMounter struct {
 	expandCalled    bool
 	expandPath      string
 	rescanCalled    bool
+	discoverCalled  bool
 	discoverPath    string
 	discoverErr     error
 	discoverSizeGiB int64
 	stageDevicePath string
+	mountedSource   string
+	removedDevicePath string
+	operations      []string
 }
 
 func (f *fakeMounter) Stage(_ context.Context, devicePath string, _ string, _ string, _ bool) error {
@@ -264,7 +363,16 @@ func (f *fakeMounter) BindMount(context.Context, string, string, bool) error {
 	return nil
 }
 
+func (f *fakeMounter) MountedSource(context.Context, string) (string, error) {
+	f.operations = append(f.operations, "source")
+	if f.mountedSource == "" {
+		return "", errors.New("not mounted")
+	}
+	return f.mountedSource, nil
+}
+
 func (f *fakeMounter) Unmount(context.Context, string) error {
+	f.operations = append(f.operations, "unmount")
 	return nil
 }
 
@@ -280,6 +388,7 @@ func (f *fakeMounter) RescanDevices(context.Context) error {
 }
 
 func (f *fakeMounter) DiscoverDevicePath(_ context.Context, sizeGiB int64) (string, error) {
+	f.discoverCalled = true
 	f.discoverSizeGiB = sizeGiB
 	if f.discoverErr != nil {
 		return "", f.discoverErr
@@ -288,4 +397,81 @@ func (f *fakeMounter) DiscoverDevicePath(_ context.Context, sizeGiB int64) (stri
 		return "", errors.New("missing fake discovered device path")
 	}
 	return f.discoverPath, nil
+}
+
+func (f *fakeMounter) RemoveDevice(_ context.Context, devicePath string) error {
+	f.operations = append(f.operations, "remove")
+	f.removedDevicePath = devicePath
+	return nil
+}
+
+type fakeBlockDevice struct {
+	name        string
+	sizeGiB     int64
+	partitioned bool
+	formatted   bool
+}
+
+func withFakeDeviceTree(t *testing.T, devices []fakeBlockDevice, mountInfo string, test func(devRoot string)) {
+	t.Helper()
+	root := t.TempDir()
+	previousSysBlockRoot := sysBlockRoot
+	previousDevRoot := devRoot
+	previousDevDiskByPathRoot := devDiskByPathRoot
+	previousMountInfoPath := mountInfoPath
+	previousHasFilesystemFunc := hasFilesystemFunc
+	defer func() {
+		sysBlockRoot = previousSysBlockRoot
+		devRoot = previousDevRoot
+		devDiskByPathRoot = previousDevDiskByPathRoot
+		mountInfoPath = previousMountInfoPath
+		hasFilesystemFunc = previousHasFilesystemFunc
+	}()
+
+	sysBlockRoot = filepath.Join(root, "sys", "block")
+	devRoot = filepath.Join(root, "dev")
+	devDiskByPathRoot = filepath.Join(devRoot, "disk", "by-path")
+	mountInfoPath = filepath.Join(root, "mountinfo")
+	if err := os.MkdirAll(sysBlockRoot, 0750); err != nil {
+		t.Fatalf("create fake sys block root: %v", err)
+	}
+	if err := os.MkdirAll(devDiskByPathRoot, 0750); err != nil {
+		t.Fatalf("create fake dev root: %v", err)
+	}
+	if err := os.WriteFile(mountInfoPath, []byte(mountInfo), 0640); err != nil {
+		t.Fatalf("write fake mountinfo: %v", err)
+	}
+
+	formatted := map[string]bool{}
+	for _, device := range devices {
+		deviceDir := filepath.Join(sysBlockRoot, device.name)
+		if err := os.MkdirAll(filepath.Join(deviceDir, "device"), 0750); err != nil {
+			t.Fatalf("create fake device: %v", err)
+		}
+		sectors := device.sizeGiB * gibibyte / 512
+		if err := os.WriteFile(filepath.Join(deviceDir, "size"), []byte(strconv.FormatInt(sectors, 10)), 0640); err != nil {
+			t.Fatalf("write fake device size: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(deviceDir, "device", "delete"), nil, 0200); err != nil {
+			t.Fatalf("write fake device delete file: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(devRoot, device.name), nil, 0640); err != nil {
+			t.Fatalf("write fake dev node: %v", err)
+		}
+		if device.partitioned {
+			partitionDir := filepath.Join(deviceDir, device.name+"1")
+			if err := os.MkdirAll(partitionDir, 0750); err != nil {
+				t.Fatalf("create fake partition: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(partitionDir, "partition"), nil, 0640); err != nil {
+				t.Fatalf("write fake partition marker: %v", err)
+			}
+		}
+		formatted[filepath.Join(devRoot, device.name)] = device.formatted
+	}
+	hasFilesystemFunc = func(_ context.Context, devicePath string) (bool, error) {
+		return formatted[devicePath], nil
+	}
+
+	test(devRoot)
 }
