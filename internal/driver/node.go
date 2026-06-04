@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/da3m0nsec/morpheus-csi/internal/morpheus"
@@ -51,7 +52,7 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	if devicePath == "" {
 		discovered, err := d.mounter.DiscoverDevicePath(ctx, volumeSizeGiB(req.GetPublishContext(), req.GetVolumeContext()))
 		if err != nil {
-			return nil, status.Errorf(codes.FailedPrecondition, "Morpheus attach response did not include morpheus.devicePath and node discovery failed after SCSI rescan: %v", err)
+			return nil, status.Errorf(codes.FailedPrecondition, "Morpheus attach response did not include morpheus.devicePath and node discovery failed after repeated SCSI rescans: %v", err)
 		}
 		devicePath = discovered
 		if d.logger != nil {
@@ -173,7 +174,7 @@ type Mounter interface {
 type realMounter struct{}
 
 func (realMounter) Stage(ctx context.Context, devicePath string, stagingPath string, fsType string, readOnly bool) error {
-	if _, err := os.Stat(devicePath); err != nil {
+	if err := waitForDevice(ctx, devicePath); err != nil {
 		return fmtMountError("find attached device", err)
 	}
 	if err := os.MkdirAll(stagingPath, 0750); err != nil {
@@ -261,27 +262,40 @@ func (realMounter) ExpandFilesystem(ctx context.Context, volumePath string, fsTy
 }
 
 func (realMounter) RescanDevices(ctx context.Context) error {
-	if err := rescanSCSIHosts(); err != nil {
-		return err
-	}
-	return settleUdev(ctx)
+	return rescanDevices(ctx)
 }
 
 func (realMounter) DiscoverDevicePath(ctx context.Context, sizeGiB int64) (string, error) {
-	candidates, err := candidateBlockDevices(ctx, sizeGiB)
-	if err != nil {
-		return "", err
-	}
-	if len(candidates) == 0 {
-		if sizeGiB > 0 {
-			return "", fmt.Errorf("no unmounted block device found matching %dGiB", sizeGiB)
+	var lastErr error
+	for attempt := 0; attempt < deviceDiscoveryAttempts; attempt++ {
+		if attempt > 0 {
+			if err := sleepDiscoveryInterval(ctx); err != nil {
+				return "", err
+			}
+			if err := rescanDevices(ctx); err != nil {
+				lastErr = err
+				continue
+			}
 		}
-		return "", errors.New("no unmounted block device candidates found")
+
+		candidates, err := candidateBlockDevices(ctx, sizeGiB)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if len(candidates) == 1 {
+			return candidates[0], nil
+		}
+		if len(candidates) > 1 {
+			return "", fmt.Errorf("multiple unmounted block device candidates found: %s", strings.Join(candidates, ", "))
+		}
+		if sizeGiB > 0 {
+			lastErr = fmt.Errorf("no unmounted block device found matching %dGiB", sizeGiB)
+		} else {
+			lastErr = errors.New("no unmounted block device candidates found")
+		}
 	}
-	if len(candidates) > 1 {
-		return "", fmt.Errorf("multiple unmounted block device candidates found: %s", strings.Join(candidates, ", "))
-	}
-	return candidates[0], nil
+	return "", lastErr
 }
 
 func (realMounter) RemoveDevice(ctx context.Context, devicePath string) error {
@@ -317,6 +331,22 @@ var (
 	hasFilesystemFunc = hasFilesystem
 )
 
+const (
+	deviceDiscoveryAttempts = 12
+	deviceDiscoveryInterval = 5 * time.Second
+)
+
+func rescanDevices(ctx context.Context) error {
+	var errs []error
+	if err := rescanSCSIHosts(); err != nil {
+		errs = append(errs, err)
+	}
+	if err := settleUdev(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
 func rescanSCSIHosts() error {
 	paths, err := filepath.Glob("/sys/class/scsi_host/host*/scan")
 	if err != nil {
@@ -332,6 +362,37 @@ func rescanSCSIHosts() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func waitForDevice(ctx context.Context, devicePath string) error {
+	var lastErr error
+	for attempt := 0; attempt < deviceDiscoveryAttempts; attempt++ {
+		if attempt > 0 {
+			if err := sleepDiscoveryInterval(ctx); err != nil {
+				return err
+			}
+			if err := rescanDevices(ctx); err != nil {
+				lastErr = err
+			}
+		}
+		if _, err := os.Stat(devicePath); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
+func sleepDiscoveryInterval(ctx context.Context) error {
+	timer := time.NewTimer(deviceDiscoveryInterval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func candidateBlockDevices(ctx context.Context, sizeGiB int64) ([]string, error) {

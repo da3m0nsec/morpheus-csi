@@ -28,9 +28,9 @@ new disk.
   server volume detach/attach endpoints:
   `PUT /api/servers/{id}/volumes/{volumeId}/detach` and
   `PUT /api/servers/{id}/volumes/{volumeId}/attach`.
-- The node plugin runs privileged and performs a SCSI host rescan before staging
-  a volume, because newly attached VM disks may not appear in `lsblk` until the
-  bus is rescanned.
+- The node plugin runs privileged and performs repeated SCSI host rescans before
+  staging a volume, because newly attached VM disks may not appear in `lsblk`
+  immediately after Morpheus attaches them.
 
 ## Known Limitations
 
@@ -126,8 +126,8 @@ kubectl -n morpheus-csi patch secret morpheus-csi-credentials --type='json' \
 kubectl -n morpheus-csi rollout restart deployment/morpheus-csi-controller
 ```
 
-If a disk appears in Morpheus but not in `lsblk`, the node plugin now attempts a
-SCSI rescan automatically. To verify manually on the worker node:
+If a disk appears in Morpheus but not in `lsblk`, the node plugin now attempts
+repeated SCSI host rescans automatically. To verify manually on the worker node:
 
 ```sh
 for host in /sys/class/scsi_host/host*; do
