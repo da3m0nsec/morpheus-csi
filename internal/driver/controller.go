@@ -3,6 +3,7 @@ package driver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -199,17 +200,41 @@ func controllerCapability(capability csi.ControllerServiceCapability_RPC_Type) *
 }
 
 func (d *Driver) serverIDForNode(ctx context.Context, nodeID string, fallback string) (string, error) {
-	if d.nodes == nil {
-		if strings.TrimSpace(fallback) != "" {
-			return strings.TrimSpace(fallback), nil
+	var resolverErr error
+	if d.nodes != nil {
+		serverID, err := d.nodes.ServerIDForNode(ctx, nodeID)
+		if err == nil {
+			return serverID, nil
 		}
-		return "", errors.New("Kubernetes node server resolver is not configured")
+		resolverErr = err
 	}
-	serverID, err := d.nodes.ServerIDForNode(ctx, nodeID)
-	if err != nil {
-		return "", err
+	if lookup := d.morpheusNodeLookup(); lookup != nil {
+		serverID, err := lookup.ResolveServerIDByNodeName(ctx, nodeID)
+		if err == nil {
+			return serverID, nil
+		}
+		if resolverErr != nil {
+			return "", fmt.Errorf("%v; Morpheus node-name lookup also failed: %w", resolverErr, err)
+		}
+		resolverErr = err
 	}
-	return serverID, nil
+	if strings.TrimSpace(fallback) != "" {
+		return strings.TrimSpace(fallback), nil
+	}
+	if resolverErr != nil {
+		return "", resolverErr
+	}
+	return "", errors.New("Kubernetes node server resolver and Morpheus node lookup are not configured")
+}
+
+func (d *Driver) morpheusNodeLookup() morpheus.NodeServerLookupClient {
+	if lookup, ok := d.discovery.(morpheus.NodeServerLookupClient); ok {
+		return lookup
+	}
+	if lookup, ok := d.volumes.(morpheus.NodeServerLookupClient); ok {
+		return lookup
+	}
+	return nil
 }
 
 func (d *Driver) candidateServerIDs(ctx context.Context, extra ...string) []string {

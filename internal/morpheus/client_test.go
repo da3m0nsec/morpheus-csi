@@ -253,6 +253,59 @@ func TestMoveVolumeDetachesSourceThenAttachesExistingVolumeToTarget(t *testing.T
 	}
 }
 
+func TestResolveServerIDByNodeNameReturnsExactMatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/servers" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("phrase"); got != "hks-cluster-worker-1" {
+			t.Fatalf("expected phrase hks-cluster-worker-1, got %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"servers": []map[string]any{
+				{"id": "server-1-never-real", "name": "other-worker"},
+				{"id": "server-2-never-real", "name": "hks-cluster-worker-1"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, "token")
+	if err != nil {
+		t.Fatalf("NewClient returned error: %v", err)
+	}
+	serverID, err := client.ResolveServerIDByNodeName(context.Background(), "hks-cluster-worker-1")
+	if err != nil {
+		t.Fatalf("ResolveServerIDByNodeName returned error: %v", err)
+	}
+	if serverID != "server-2-never-real" {
+		t.Fatalf("expected server-2-never-real, got %q", serverID)
+	}
+}
+
+func TestResolveServerIDByNodeNameRejectsAmbiguousMatches(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/servers" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"servers": []map[string]any{
+				{"id": "server-1-never-real", "name": "worker-prefix-a"},
+				{"id": "server-2-never-real", "name": "worker-prefix-b"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, "token")
+	if err != nil {
+		t.Fatalf("NewClient returned error: %v", err)
+	}
+	if _, err := client.ResolveServerIDByNodeName(context.Background(), "worker-prefix"); err == nil {
+		t.Fatal("expected ambiguous node lookup to fail")
+	}
+}
+
 func TestExpandVolumeRejectsShrink(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/servers/test-server-never-real" {

@@ -154,6 +154,53 @@ func TestControllerPublishMovesVolumeToRequestedNodeServer(t *testing.T) {
 	}
 }
 
+func TestControllerPublishFallsBackToMorpheusNodeNameLookup(t *testing.T) {
+	fake := &fakeMorpheus{
+		volume: &morpheus.StorageVolume{
+			ID:      "test-volume-never-real",
+			Name:    "pvc-123",
+			SizeGiB: 14,
+		},
+		nodeServers: map[string]string{"worker-2": "target-server-never-real"},
+	}
+	driver := NewWithDependenciesAndNodeResolver(config.Default(), log.Default(), fake, fake, &fakeMounter{}, nil)
+
+	_, err := driver.ControllerPublishVolume(context.Background(), &csi.ControllerPublishVolumeRequest{
+		VolumeId: "source-server-never-real:test-volume-never-real",
+		NodeId:   "worker-2",
+	})
+	if err != nil {
+		t.Fatalf("ControllerPublishVolume returned error: %v", err)
+	}
+	if fake.moveRequest.TargetServerID != "target-server-never-real" {
+		t.Fatalf("expected Morpheus lookup target server, got %q", fake.moveRequest.TargetServerID)
+	}
+}
+
+func TestControllerPublishPrefersNodeLabelOverMorpheusLookup(t *testing.T) {
+	fake := &fakeMorpheus{
+		volume: &morpheus.StorageVolume{
+			ID:      "test-volume-never-real",
+			Name:    "pvc-123",
+			SizeGiB: 14,
+		},
+		nodeServers: map[string]string{"worker-2": "lookup-server-never-real"},
+	}
+	nodes := &fakeNodeResolver{nodeServers: map[string]string{"worker-2": "label-server-never-real"}}
+	driver := NewWithDependenciesAndNodeResolver(config.Default(), log.Default(), fake, fake, &fakeMounter{}, nodes)
+
+	_, err := driver.ControllerPublishVolume(context.Background(), &csi.ControllerPublishVolumeRequest{
+		VolumeId: "source-server-never-real:test-volume-never-real",
+		NodeId:   "worker-2",
+	})
+	if err != nil {
+		t.Fatalf("ControllerPublishVolume returned error: %v", err)
+	}
+	if fake.moveRequest.TargetServerID != "label-server-never-real" {
+		t.Fatalf("expected label target server, got %q", fake.moveRequest.TargetServerID)
+	}
+}
+
 func TestControllerPublishIsIdempotentOnRequestedNodeServer(t *testing.T) {
 	fake := &fakeMorpheus{
 		volume: &morpheus.StorageVolume{
@@ -376,6 +423,22 @@ func TestNodeUnstageUnmountsBeforeRemovingDevice(t *testing.T) {
 	}
 }
 
+func TestNodeUnpublishOnlyUnmountsPodTarget(t *testing.T) {
+	mounter := &fakeMounter{}
+	driver := NewWithDependencies(config.Config{NodeID: "worker-1"}, log.Default(), nil, nil, mounter)
+
+	_, err := driver.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
+		VolumeId:   "test-server-never-real:test-volume-never-real",
+		TargetPath: "/var/lib/kubelet/pods/pod/volumes/kubernetes.io~csi/pv/mount",
+	})
+	if err != nil {
+		t.Fatalf("NodeUnpublishVolume returned error: %v", err)
+	}
+	if got := mounter.operations; len(got) != 1 || got[0] != "unmount" {
+		t.Fatalf("expected only pod target unmount, got %#v", got)
+	}
+}
+
 func TestNodeUnstageFallsBackToPersistedDeviceMetadata(t *testing.T) {
 	mounter := &fakeMounter{stagedDevicePath: "/dev/sdb"}
 	driver := NewWithDependencies(config.Config{NodeID: "worker-1"}, log.Default(), nil, nil, mounter)
@@ -451,6 +514,7 @@ type fakeMorpheus struct {
 	ensureCalled  bool
 	deletedRef    morpheus.VolumeRef
 	detachedRef   morpheus.VolumeRef
+	nodeServers   map[string]string
 	err           error
 }
 
@@ -527,6 +591,17 @@ func (f *fakeMorpheus) ValidateStorageClass(_ context.Context, parameters map[st
 		return errors.New("server id is required")
 	}
 	return nil
+}
+
+func (f *fakeMorpheus) ResolveServerIDByNodeName(_ context.Context, nodeName string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	serverID := f.nodeServers[nodeName]
+	if serverID == "" {
+		return "", errors.New("missing fake node lookup")
+	}
+	return serverID, nil
 }
 
 type fakeMounter struct {

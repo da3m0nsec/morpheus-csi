@@ -4,7 +4,7 @@ This overlay is the intended edit point for a first deployment.
 
 1. Copy `secret.env.example` to `secret.env`.
 2. Edit `secret.env` with the Morpheus URL and API token.
-3. Label each Kubernetes worker with its Morpheus server ID, for example `kubectl label node k8s-test-1-worker-2 morpheus.csi/server-id=896`.
+3. If Morpheus server names/hostnames do not exactly match Kubernetes node names, label each Kubernetes worker with its Morpheus server ID, for example `kubectl label node k8s-test-1-worker-2 morpheus.csi/server-id=896`.
 4. Edit `storageclass.yaml` with the initial Morpheus server ID, datastore ID, and storage type used when creating new volumes by resize. The example defaults `morpheus.storageType` to `38` for thin.
 5. Optionally edit image tags in `kustomization.yaml`.
 6. Deploy with `kubectl apply -k deploy/kubernetes/overlays/example`.

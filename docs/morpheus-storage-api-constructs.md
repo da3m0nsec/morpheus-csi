@@ -166,7 +166,7 @@ CSI inputs:
 
 Node mapping:
 
-- Kubernetes node names map to Morpheus server IDs through node label `morpheus.csi/server-id`.
+- Kubernetes node names map to Morpheus server IDs through node label `morpheus.csi/server-id` when present; otherwise the driver queries Morpheus servers by node name and requires an unambiguous match.
 
 ### `ControllerUnpublishVolume`
 
@@ -225,7 +225,7 @@ type StorageDiscoveryClient interface {
 }
 ```
 
-The first implementation keeps the Morpheus server ID in `StorageClass` for initial provisioning and encodes CSI volume IDs as `<serverID>:<volumeID>`. Controller publish resolves the target server from Kubernetes node label `morpheus.csi/server-id` and moves existing volumes with HVM-only detach/attach server volume endpoints.
+The first implementation keeps the Morpheus server ID in `StorageClass` for initial provisioning and encodes CSI volume IDs as `<serverID>:<volumeID>`. Controller publish resolves the target server from Kubernetes node label `morpheus.csi/server-id` when present, otherwise by Morpheus server lookup using the Kubernetes node name, and moves existing volumes with HVM-only detach/attach server volume endpoints.
 
 ## StorageClass Draft
 
@@ -257,4 +257,4 @@ parameters:
 - Confirm all accepted size fields. Current implementation sends `size` as GiB in the top-level resize `volumes` payload.
 - Confirm which field stores a stable external ID/name usable for CSI idempotency.
 - Confirm which server volume field, if any, exposes the node device path after resize.
-- Confirm the future node mapping from Kubernetes nodes to Morpheus server IDs.
+- Confirm whether Morpheus server names/hostnames exactly match Kubernetes node names in the target environment.

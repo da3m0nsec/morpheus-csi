@@ -10,7 +10,8 @@ reclaimPolicy: Delete
 volumeBindingMode: Immediate
 allowVolumeExpansion: true
 parameters:
-  # Initial provisioning server. Controller publish uses node label morpheus.csi/server-id for attach decisions.
+  # Initial provisioning server. Controller publish prefers node label morpheus.csi/server-id,
+  # then falls back to Morpheus server lookup by Kubernetes node name.
   morpheus.serverId: "replace-with-k8s-node-morpheus-server-id"
   morpheus.storageType: "38"
   morpheus.datastoreId: "replace-with-datastore-id"

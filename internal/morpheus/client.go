@@ -19,13 +19,13 @@ import (
 )
 
 const (
-	ParamServerID              = "morpheus.serverId"
-	legacyParamHostID          = "morpheus.hostId"
-	legacyParamInstanceID      = "morpheus.instanceId"
-	ParamStorageType           = "morpheus.storageType"
-	ParamStorageTypeID         = "morpheus.storageTypeId"
-	ParamDatastoreID           = "morpheus.datastoreId"
-	ParamConfigPrefix          = "morpheus.config."
+	ParamServerID         = "morpheus.serverId"
+	legacyParamHostID     = "morpheus.hostId"
+	legacyParamInstanceID = "morpheus.instanceId"
+	ParamStorageType      = "morpheus.storageType"
+	ParamStorageTypeID    = "morpheus.storageTypeId"
+	ParamDatastoreID      = "morpheus.datastoreId"
+	ParamConfigPrefix     = "morpheus.config."
 
 	VolumeContextServerID   = "morpheus.serverId"
 	VolumeContextVolumeID   = "morpheus.volumeId"
@@ -84,9 +84,20 @@ type StorageDiscoveryClient interface {
 	ValidateStorageClass(ctx context.Context, parameters map[string]string) error
 }
 
+type NodeServerLookupClient interface {
+	ResolveServerIDByNodeName(ctx context.Context, nodeName string) (string, error)
+}
+
 type serverState struct {
 	ID      string
 	Volumes []StorageVolume
+}
+
+type serverRecord struct {
+	ID         string
+	Name       string
+	Hostname   string
+	ExternalID string
 }
 
 type Client struct {
@@ -161,6 +172,42 @@ func (c *Client) ValidateStorageClass(_ context.Context, parameters map[string]s
 		return fmt.Errorf("storage class parameter %q is required", ParamServerID)
 	}
 	return nil
+}
+
+func (c *Client) ResolveServerIDByNodeName(ctx context.Context, nodeName string) (string, error) {
+	nodeName = strings.TrimSpace(nodeName)
+	if nodeName == "" {
+		return "", errors.New("node name is required")
+	}
+
+	values := url.Values{}
+	values.Set("phrase", nodeName)
+
+	var response map[string]any
+	if err := c.do(ctx, http.MethodGet, "/api/servers", values, nil, &response); err != nil {
+		return "", err
+	}
+	servers := parseServerList(response)
+	if len(servers) == 0 {
+		return "", fmt.Errorf("no Morpheus server matched Kubernetes node %q", nodeName)
+	}
+
+	var exactMatches []serverRecord
+	for _, server := range servers {
+		if server.matchesNodeName(nodeName) {
+			exactMatches = append(exactMatches, server)
+		}
+	}
+	switch {
+	case len(exactMatches) == 1:
+		return exactMatches[0].ID, nil
+	case len(exactMatches) > 1:
+		return "", fmt.Errorf("multiple Morpheus servers exactly matched Kubernetes node %q", nodeName)
+	case len(servers) == 1:
+		return servers[0].ID, nil
+	default:
+		return "", fmt.Errorf("multiple Morpheus servers matched Kubernetes node %q; add node label to disambiguate", nodeName)
+	}
 }
 
 func (c *Client) EnsureVolume(ctx context.Context, req ResizeVolumeRequest) (*StorageVolume, error) {
@@ -550,6 +597,46 @@ func parseVolumeList(server map[string]any) []StorageVolume {
 		}
 	}
 	return nil
+}
+
+func parseServerList(response map[string]any) []serverRecord {
+	for _, key := range []string{"servers", "storageServers", "data"} {
+		if rawServers := asSlice(response[key]); len(rawServers) > 0 {
+			servers := make([]serverRecord, 0, len(rawServers))
+			for _, raw := range rawServers {
+				if server := parseServer(asMap(raw)); server.ID != "" {
+					servers = append(servers, server)
+				}
+			}
+			return servers
+		}
+	}
+	if server := parseServer(firstMap(response, "server")); server.ID != "" {
+		return []serverRecord{server}
+	}
+	return nil
+}
+
+func parseServer(values map[string]any) serverRecord {
+	if len(values) == 0 {
+		return serverRecord{}
+	}
+	return serverRecord{
+		ID:         stringValue(values["id"]),
+		Name:       stringValue(values["name"]),
+		Hostname:   stringValue(firstValue(values, "hostname", "hostName", "displayName")),
+		ExternalID: stringValue(firstValue(values, "externalId", "externalID", "uuid")),
+	}
+}
+
+func (s serverRecord) matchesNodeName(nodeName string) bool {
+	nodeName = strings.TrimSpace(nodeName)
+	for _, candidate := range []string{s.Name, s.Hostname, s.ExternalID} {
+		if strings.EqualFold(strings.TrimSpace(candidate), nodeName) {
+			return true
+		}
+	}
+	return false
 }
 
 func StorageClassServerID(parameters map[string]string) string {
