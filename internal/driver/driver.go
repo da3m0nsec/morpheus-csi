@@ -57,7 +57,7 @@ func New(cfg config.Config, logger *log.Logger) *Driver {
 		logger:    logger,
 		volumes:   client,
 		discovery: client,
-		mounter:   realMounter{},
+		mounter:   newRealMounter(cfg.KubeletRootPath, cfg.DriverName),
 		nodes:     nodes,
 	}
 }
@@ -81,7 +81,7 @@ func NewWithDependenciesAndNodeResolver(
 	nodes NodeServerResolver,
 ) *Driver {
 	if mounter == nil {
-		mounter = realMounter{}
+		mounter = newRealMounter(cfg.KubeletRootPath, cfg.DriverName)
 	}
 	return &Driver{
 		cfg:       cfg,

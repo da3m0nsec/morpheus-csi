@@ -2,6 +2,9 @@ package driver
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -63,6 +66,9 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	if err := d.mounter.Stage(ctx, devicePath, stagingPath, fsType, false); err != nil {
 		return nil, status.Errorf(codes.Internal, "stage Morpheus volume %q from %s: %v", volumeID, devicePath, err)
 	}
+	if err := d.mounter.RecordStagedDevice(ctx, volumeID, devicePath, stagingPath); err != nil {
+		return nil, status.Errorf(codes.Internal, "record staged Morpheus volume %q device %s: %v", volumeID, devicePath, err)
+	}
 	return &csi.NodeStageVolumeResponse{}, nil
 }
 
@@ -79,12 +85,28 @@ func (d *Driver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolu
 	if err != nil && d.logger != nil {
 		d.logger.Printf("could not resolve mounted source for Morpheus volume %q at %s before unstage: %v", volumeID, stagingPath, err)
 	}
+	if source == "" {
+		recordedSource, err := d.mounter.StagedDevicePath(ctx, volumeID)
+		if err != nil {
+			if d.logger != nil {
+				d.logger.Printf("could not load staged device metadata for Morpheus volume %q before unstage: %v", volumeID, err)
+			}
+		} else {
+			source = recordedSource
+			if d.logger != nil {
+				d.logger.Printf("using recorded staged device %s for Morpheus volume %q cleanup", source, volumeID)
+			}
+		}
+	}
 	if err := d.mounter.Unmount(ctx, stagingPath); err != nil {
 		return nil, status.Errorf(codes.Internal, "unstage Morpheus volume: %v", err)
 	}
 	if source != "" {
 		if err := d.mounter.RemoveDevice(ctx, source); err != nil {
 			return nil, status.Errorf(codes.Internal, "remove local Morpheus volume device %q after unstage: %v", source, err)
+		}
+		if err := d.mounter.ForgetStagedDevice(ctx, volumeID); err != nil {
+			return nil, status.Errorf(codes.Internal, "remove staged Morpheus volume metadata for %q: %v", volumeID, err)
 		}
 		if d.logger != nil {
 			d.logger.Printf("removed local Morpheus volume %q device %s after unstage", volumeID, source)
@@ -169,9 +191,29 @@ type Mounter interface {
 	RescanDevices(ctx context.Context) error
 	DiscoverDevicePath(ctx context.Context, sizeGiB int64) (string, error)
 	RemoveDevice(ctx context.Context, devicePath string) error
+	RecordStagedDevice(ctx context.Context, volumeID string, devicePath string, stagingPath string) error
+	StagedDevicePath(ctx context.Context, volumeID string) (string, error)
+	ForgetStagedDevice(ctx context.Context, volumeID string) error
 }
 
-type realMounter struct{}
+type realMounter struct {
+	kubeletRootPath string
+	driverName      string
+}
+
+func newRealMounter(kubeletRootPath string, driverName string) realMounter {
+	return realMounter{
+		kubeletRootPath: kubeletRootPath,
+		driverName:      driverName,
+	}
+}
+
+type stagedDeviceMetadata struct {
+	VolumeID    string `json:"volumeID"`
+	DevicePath  string `json:"devicePath"`
+	StagingPath string `json:"stagingPath"`
+	Timestamp   string `json:"timestamp"`
+}
 
 func (realMounter) Stage(ctx context.Context, devicePath string, stagingPath string, fsType string, readOnly bool) error {
 	if err := waitForDevice(ctx, devicePath); err != nil {
@@ -321,6 +363,104 @@ func (realMounter) RemoveDevice(ctx context.Context, devicePath string) error {
 		return fmtMountError(deletePath, err)
 	}
 	return settleUdev(ctx)
+}
+
+func (m realMounter) RecordStagedDevice(_ context.Context, volumeID string, devicePath string, stagingPath string) error {
+	metadata := stagedDeviceMetadata{
+		VolumeID:    strings.TrimSpace(volumeID),
+		DevicePath:  strings.TrimSpace(devicePath),
+		StagingPath: strings.TrimSpace(stagingPath),
+		Timestamp:   time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if metadata.VolumeID == "" {
+		return errors.New("volume id is required")
+	}
+	if metadata.DevicePath == "" {
+		return errors.New("device path is required")
+	}
+	if metadata.StagingPath == "" {
+		return errors.New("staging path is required")
+	}
+	dir := m.stagedDeviceMetadataDir()
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	path := m.stagedDeviceMetadataPath(volumeID)
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0640); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func (m realMounter) StagedDevicePath(_ context.Context, volumeID string) (string, error) {
+	data, err := os.ReadFile(m.stagedDeviceMetadataPath(volumeID))
+	if err != nil {
+		return "", err
+	}
+	var metadata stagedDeviceMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return "", err
+	}
+	if metadata.VolumeID != strings.TrimSpace(volumeID) {
+		return "", fmt.Errorf("staged device metadata volume id mismatch: got %q", metadata.VolumeID)
+	}
+	devicePath := strings.TrimSpace(metadata.DevicePath)
+	if devicePath == "" {
+		return "", errors.New("staged device metadata is missing device path")
+	}
+	return devicePath, nil
+}
+
+func (m realMounter) ForgetStagedDevice(_ context.Context, volumeID string) error {
+	err := os.Remove(m.stagedDeviceMetadataPath(volumeID))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func (m realMounter) stagedDeviceMetadataPath(volumeID string) string {
+	return filepath.Join(m.stagedDeviceMetadataDir(), safeVolumeMetadataName(volumeID)+".json")
+}
+
+func (m realMounter) stagedDeviceMetadataDir() string {
+	kubeletRootPath := strings.TrimSpace(m.kubeletRootPath)
+	if kubeletRootPath == "" {
+		kubeletRootPath = "/var/lib/kubelet"
+	}
+	driverName := strings.TrimSpace(m.driverName)
+	if driverName == "" {
+		driverName = "csi.morpheusdata.com"
+	}
+	return filepath.Join(kubeletRootPath, "plugins", driverName, "volumes")
+}
+
+func safeVolumeMetadataName(volumeID string) string {
+	var builder strings.Builder
+	trimmed := strings.TrimSpace(volumeID)
+	for _, char := range trimmed {
+		if (char >= 'a' && char <= 'z') ||
+			(char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') ||
+			char == '.' ||
+			char == '_' ||
+			char == '-' {
+			builder.WriteRune(char)
+			continue
+		}
+		builder.WriteByte('_')
+	}
+	if builder.Len() == 0 {
+		builder.WriteString("volume")
+	}
+	sum := sha256.Sum256([]byte(trimmed))
+	return builder.String() + "-" + hex.EncodeToString(sum[:])[:12]
 }
 
 var (

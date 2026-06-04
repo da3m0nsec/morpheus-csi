@@ -284,6 +284,32 @@ func TestNodeStageUsesMorpheusProvidedDevicePath(t *testing.T) {
 	}
 }
 
+func TestNodeStageRecordsDeviceMetadata(t *testing.T) {
+	mounter := &fakeMounter{}
+	driver := NewWithDependencies(config.Config{NodeID: "worker-1"}, log.Default(), nil, nil, mounter)
+
+	_, err := driver.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          "test-server-never-real:test-volume-never-real",
+		StagingTargetPath: "/var/lib/kubelet/plugins/kubernetes.io/csi/pv/42/globalmount",
+		VolumeCapability:  mountCapability(),
+		PublishContext: map[string]string{
+			morpheus.VolumeContextDevicePath: "/dev/sdb",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NodeStageVolume returned error: %v", err)
+	}
+	if mounter.recordedVolumeID != "test-server-never-real:test-volume-never-real" {
+		t.Fatalf("expected recorded volume ID, got %q", mounter.recordedVolumeID)
+	}
+	if mounter.recordedDevicePath != "/dev/sdb" {
+		t.Fatalf("expected recorded device path /dev/sdb, got %q", mounter.recordedDevicePath)
+	}
+	if mounter.recordedStagingPath != "/var/lib/kubelet/plugins/kubernetes.io/csi/pv/42/globalmount" {
+		t.Fatalf("expected recorded staging path, got %q", mounter.recordedStagingPath)
+	}
+}
+
 func TestCandidateBlockDevicesDiscoversSingleSafeSizeMatch(t *testing.T) {
 	withFakeDeviceTree(t, []fakeBlockDevice{
 		{name: "sdb", sizeGiB: 14},
@@ -342,11 +368,49 @@ func TestNodeUnstageUnmountsBeforeRemovingDevice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NodeUnstageVolume returned error: %v", err)
 	}
-	if got := mounter.operations; len(got) != 3 || got[0] != "source" || got[1] != "unmount" || got[2] != "remove" {
-		t.Fatalf("expected source, unmount, remove operations, got %#v", got)
+	if got := mounter.operations; len(got) != 4 || got[0] != "source" || got[1] != "unmount" || got[2] != "remove" || got[3] != "forget" {
+		t.Fatalf("expected source, unmount, remove, forget operations, got %#v", got)
 	}
 	if mounter.removedDevicePath != "/dev/sdb" {
 		t.Fatalf("expected /dev/sdb to be removed, got %q", mounter.removedDevicePath)
+	}
+}
+
+func TestNodeUnstageFallsBackToPersistedDeviceMetadata(t *testing.T) {
+	mounter := &fakeMounter{stagedDevicePath: "/dev/sdb"}
+	driver := NewWithDependencies(config.Config{NodeID: "worker-1"}, log.Default(), nil, nil, mounter)
+
+	_, err := driver.NodeUnstageVolume(context.Background(), &csi.NodeUnstageVolumeRequest{
+		VolumeId:          "test-server-never-real:test-volume-never-real",
+		StagingTargetPath: "/var/lib/kubelet/plugins/kubernetes.io/csi/pv/42/globalmount",
+	})
+	if err != nil {
+		t.Fatalf("NodeUnstageVolume returned error: %v", err)
+	}
+	if got := mounter.operations; len(got) != 5 || got[0] != "source" || got[1] != "metadata" || got[2] != "unmount" || got[3] != "remove" || got[4] != "forget" {
+		t.Fatalf("expected source, metadata, unmount, remove, forget operations, got %#v", got)
+	}
+	if mounter.removedDevicePath != "/dev/sdb" {
+		t.Fatalf("expected persisted /dev/sdb to be removed, got %q", mounter.removedDevicePath)
+	}
+}
+
+func TestNodeUnstageKeepsMetadataWhenDeviceRemovalFails(t *testing.T) {
+	mounter := &fakeMounter{
+		stagedDevicePath: "/dev/sdb",
+		removeErr:        errors.New("remove failed"),
+	}
+	driver := NewWithDependencies(config.Config{NodeID: "worker-1"}, log.Default(), nil, nil, mounter)
+
+	_, err := driver.NodeUnstageVolume(context.Background(), &csi.NodeUnstageVolumeRequest{
+		VolumeId:          "test-server-never-real:test-volume-never-real",
+		StagingTargetPath: "/var/lib/kubelet/plugins/kubernetes.io/csi/pv/42/globalmount",
+	})
+	if err == nil {
+		t.Fatal("expected NodeUnstageVolume to fail when device removal fails")
+	}
+	if mounter.forgetCalled {
+		t.Fatal("expected staged device metadata to remain when device removal fails")
 	}
 }
 
@@ -466,17 +530,23 @@ func (f *fakeMorpheus) ValidateStorageClass(_ context.Context, parameters map[st
 }
 
 type fakeMounter struct {
-	expandCalled    bool
-	expandPath      string
-	rescanCalled    bool
-	discoverCalled  bool
-	discoverPath    string
-	discoverErr     error
-	discoverSizeGiB int64
-	stageDevicePath string
-	mountedSource   string
-	removedDevicePath string
-	operations      []string
+	expandCalled        bool
+	expandPath          string
+	rescanCalled        bool
+	discoverCalled      bool
+	discoverPath        string
+	discoverErr         error
+	discoverSizeGiB     int64
+	stageDevicePath     string
+	recordedVolumeID    string
+	recordedDevicePath  string
+	recordedStagingPath string
+	stagedDevicePath    string
+	mountedSource       string
+	removedDevicePath   string
+	removeErr           error
+	forgetCalled        bool
+	operations          []string
 }
 
 func (f *fakeMounter) Stage(_ context.Context, devicePath string, _ string, _ string, _ bool) error {
@@ -527,6 +597,30 @@ func (f *fakeMounter) DiscoverDevicePath(_ context.Context, sizeGiB int64) (stri
 func (f *fakeMounter) RemoveDevice(_ context.Context, devicePath string) error {
 	f.operations = append(f.operations, "remove")
 	f.removedDevicePath = devicePath
+	if f.removeErr != nil {
+		return f.removeErr
+	}
+	return nil
+}
+
+func (f *fakeMounter) RecordStagedDevice(_ context.Context, volumeID string, devicePath string, stagingPath string) error {
+	f.recordedVolumeID = volumeID
+	f.recordedDevicePath = devicePath
+	f.recordedStagingPath = stagingPath
+	return nil
+}
+
+func (f *fakeMounter) StagedDevicePath(context.Context, string) (string, error) {
+	f.operations = append(f.operations, "metadata")
+	if f.stagedDevicePath == "" {
+		return "", errors.New("missing fake staged device path")
+	}
+	return f.stagedDevicePath, nil
+}
+
+func (f *fakeMounter) ForgetStagedDevice(context.Context, string) error {
+	f.operations = append(f.operations, "forget")
+	f.forgetCalled = true
 	return nil
 }
 
