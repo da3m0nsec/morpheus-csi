@@ -47,6 +47,9 @@ func TestCreateVolumeEnsuresServerVolume(t *testing.T) {
 	if resp.GetVolume().GetVolumeContext()[morpheus.VolumeContextSizeGiB] != "10" {
 		t.Fatalf("expected volume context size 10GiB, got %q", resp.GetVolume().GetVolumeContext()[morpheus.VolumeContextSizeGiB])
 	}
+	if resp.GetVolume().GetVolumeContext()[morpheus.VolumeContextVolumeID] != "test-volume-never-real" {
+		t.Fatalf("expected volume context ID test-volume-never-real, got %q", resp.GetVolume().GetVolumeContext()[morpheus.VolumeContextVolumeID])
+	}
 }
 
 func TestCreateVolumeRejectsMissingServerID(t *testing.T) {
@@ -101,6 +104,96 @@ func TestControllerPublishReturnsDevicePathFromServerVolume(t *testing.T) {
 	}
 	if got := resp.GetPublishContext()[morpheus.VolumeContextDevicePath]; got != "/dev/disk/by-id/morpheus-test-volume" {
 		t.Fatalf("expected device path in publish context, got %q", got)
+	}
+}
+
+func TestNodeResolverReadsServerIDLabel(t *testing.T) {
+	resolver := &fakeNodeResolver{nodeServers: map[string]string{"worker-2": "896"}}
+
+	serverID, err := resolver.ServerIDForNode(context.Background(), "worker-2")
+	if err != nil {
+		t.Fatalf("ServerIDForNode returned error: %v", err)
+	}
+	if serverID != "896" {
+		t.Fatalf("expected server ID 896, got %q", serverID)
+	}
+}
+
+func TestControllerPublishMovesVolumeToRequestedNodeServer(t *testing.T) {
+	fake := &fakeMorpheus{
+		volume: &morpheus.StorageVolume{
+			ID:      "test-volume-never-real",
+			Name:    "pvc-123",
+			SizeGiB: 14,
+		},
+	}
+	nodes := &fakeNodeResolver{nodeServers: map[string]string{"worker-2": "target-server-never-real"}}
+	driver := NewWithDependenciesAndNodeResolver(config.Default(), log.Default(), fake, fake, &fakeMounter{}, nodes)
+
+	resp, err := driver.ControllerPublishVolume(context.Background(), &csi.ControllerPublishVolumeRequest{
+		VolumeId: "source-server-never-real:test-volume-never-real",
+		NodeId:   "worker-2",
+		VolumeContext: map[string]string{
+			morpheus.VolumeContextSizeGiB: "14",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ControllerPublishVolume returned error: %v", err)
+	}
+	if fake.moveRequest.TargetServerID != "target-server-never-real" {
+		t.Fatalf("expected move target server target-server-never-real, got %q", fake.moveRequest.TargetServerID)
+	}
+	if fake.moveRequest.VolumeID != "test-volume-never-real" {
+		t.Fatalf("expected move volume test-volume-never-real, got %q", fake.moveRequest.VolumeID)
+	}
+	if got := resp.GetPublishContext()[morpheus.VolumeContextServerID]; got != "target-server-never-real" {
+		t.Fatalf("expected publish context target server, got %q", got)
+	}
+	if got := resp.GetPublishContext()[morpheus.VolumeContextVolumeID]; got != "test-volume-never-real" {
+		t.Fatalf("expected publish context volume ID, got %q", got)
+	}
+}
+
+func TestControllerPublishIsIdempotentOnRequestedNodeServer(t *testing.T) {
+	fake := &fakeMorpheus{
+		volume: &morpheus.StorageVolume{
+			ID:      "test-volume-never-real",
+			Name:    "pvc-123",
+			SizeGiB: 14,
+		},
+	}
+	nodes := &fakeNodeResolver{nodeServers: map[string]string{"worker-2": "source-server-never-real"}}
+	driver := NewWithDependenciesAndNodeResolver(config.Default(), log.Default(), fake, fake, &fakeMounter{}, nodes)
+
+	_, err := driver.ControllerPublishVolume(context.Background(), &csi.ControllerPublishVolumeRequest{
+		VolumeId: "source-server-never-real:test-volume-never-real",
+		NodeId:   "worker-2",
+	})
+	if err != nil {
+		t.Fatalf("ControllerPublishVolume returned error: %v", err)
+	}
+	if fake.moveRequest.TargetServerID != "source-server-never-real" {
+		t.Fatalf("expected idempotent attach target source-server-never-real, got %q", fake.moveRequest.TargetServerID)
+	}
+}
+
+func TestControllerUnpublishDetachesButDoesNotDelete(t *testing.T) {
+	fake := &fakeMorpheus{}
+	nodes := &fakeNodeResolver{nodeServers: map[string]string{"worker-2": "target-server-never-real"}}
+	driver := NewWithDependenciesAndNodeResolver(config.Default(), log.Default(), fake, fake, &fakeMounter{}, nodes)
+
+	_, err := driver.ControllerUnpublishVolume(context.Background(), &csi.ControllerUnpublishVolumeRequest{
+		VolumeId: "source-server-never-real:test-volume-never-real",
+		NodeId:   "worker-2",
+	})
+	if err != nil {
+		t.Fatalf("ControllerUnpublishVolume returned error: %v", err)
+	}
+	if fake.detachedRef != (morpheus.VolumeRef{ServerID: "target-server-never-real", VolumeID: "test-volume-never-real"}) {
+		t.Fatalf("unexpected detached ref: %+v", fake.detachedRef)
+	}
+	if fake.deletedRef != (morpheus.VolumeRef{}) {
+		t.Fatalf("ControllerUnpublishVolume should not delete volume, got deleted ref %+v", fake.deletedRef)
 	}
 }
 
@@ -290,8 +383,10 @@ type fakeMorpheus struct {
 	volume        *morpheus.StorageVolume
 	ensureRequest morpheus.ResizeVolumeRequest
 	expandRequest morpheus.ResizeVolumeRequest
+	moveRequest   morpheus.MoveVolumeRequest
 	ensureCalled  bool
 	deletedRef    morpheus.VolumeRef
+	detachedRef   morpheus.VolumeRef
 	err           error
 }
 
@@ -331,6 +426,36 @@ func (f *fakeMorpheus) GetVolume(context.Context, morpheus.VolumeRef) (*morpheus
 		return nil, errors.New("missing fake volume")
 	}
 	return f.volume, nil
+}
+
+func (f *fakeMorpheus) FindVolume(_ context.Context, volumeID string, serverIDs []string) (morpheus.VolumeRef, *morpheus.StorageVolume, error) {
+	if f.err != nil {
+		return morpheus.VolumeRef{}, nil, f.err
+	}
+	if f.volume == nil {
+		return morpheus.VolumeRef{}, nil, errors.New("missing fake volume")
+	}
+	serverID := "test-server-never-real"
+	if len(serverIDs) > 0 {
+		serverID = serverIDs[0]
+	}
+	return morpheus.VolumeRef{ServerID: serverID, VolumeID: volumeID}, f.volume, nil
+}
+
+func (f *fakeMorpheus) MoveVolume(_ context.Context, req morpheus.MoveVolumeRequest) (*morpheus.StorageVolume, error) {
+	f.moveRequest = req
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.volume == nil {
+		return nil, errors.New("missing fake volume")
+	}
+	return f.volume, nil
+}
+
+func (f *fakeMorpheus) DetachVolume(_ context.Context, ref morpheus.VolumeRef) error {
+	f.detachedRef = ref
+	return f.err
 }
 
 func (f *fakeMorpheus) ValidateStorageClass(_ context.Context, parameters map[string]string) error {
@@ -403,6 +528,33 @@ func (f *fakeMounter) RemoveDevice(_ context.Context, devicePath string) error {
 	f.operations = append(f.operations, "remove")
 	f.removedDevicePath = devicePath
 	return nil
+}
+
+type fakeNodeResolver struct {
+	nodeServers map[string]string
+	err         error
+}
+
+func (f *fakeNodeResolver) ServerIDForNode(_ context.Context, nodeName string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	serverID := f.nodeServers[nodeName]
+	if serverID == "" {
+		return "", errors.New("missing fake node server")
+	}
+	return serverID, nil
+}
+
+func (f *fakeNodeResolver) ServerIDs(context.Context) ([]string, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	var ids []string
+	for _, serverID := range f.nodeServers {
+		ids = append(ids, serverID)
+	}
+	return ids, nil
 }
 
 type fakeBlockDevice struct {

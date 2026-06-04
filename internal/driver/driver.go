@@ -27,6 +27,7 @@ type Driver struct {
 	volumes   morpheus.ServerVolumeClient
 	discovery morpheus.StorageDiscoveryClient
 	mounter   Mounter
+	nodes     NodeServerResolver
 }
 
 func New(cfg config.Config, logger *log.Logger) *Driver {
@@ -46,6 +47,10 @@ func New(cfg config.Config, logger *log.Logger) *Driver {
 			client.SetDebugLogger(logger)
 		}
 	}
+	nodes, err := newKubernetesNodeServerResolver(cfg.NodeServerIDLabel)
+	if err != nil && logger != nil && (cfg.Mode == config.ModeAll || cfg.Mode == config.ModeController) {
+		logger.Printf("Kubernetes node server resolver is not configured: %v", err)
+	}
 
 	return &Driver{
 		cfg:       cfg,
@@ -53,6 +58,7 @@ func New(cfg config.Config, logger *log.Logger) *Driver {
 		volumes:   client,
 		discovery: client,
 		mounter:   realMounter{},
+		nodes:     nodes,
 	}
 }
 
@@ -63,6 +69,17 @@ func NewWithDependencies(
 	discovery morpheus.StorageDiscoveryClient,
 	mounter Mounter,
 ) *Driver {
+	return NewWithDependenciesAndNodeResolver(cfg, logger, volumes, discovery, mounter, nil)
+}
+
+func NewWithDependenciesAndNodeResolver(
+	cfg config.Config,
+	logger *log.Logger,
+	volumes morpheus.ServerVolumeClient,
+	discovery morpheus.StorageDiscoveryClient,
+	mounter Mounter,
+	nodes NodeServerResolver,
+) *Driver {
 	if mounter == nil {
 		mounter = realMounter{}
 	}
@@ -72,6 +89,7 @@ func NewWithDependencies(
 		volumes:   volumes,
 		discovery: discovery,
 		mounter:   mounter,
+		nodes:     nodes,
 	}
 }
 

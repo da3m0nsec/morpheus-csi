@@ -20,19 +20,27 @@ new disk.
   desired Morpheus `volumes` array, preserving existing disks and adding new CSI
   volumes with `id: -1`.
 - `StorageClass` selects the Morpheus server, datastore, and storage type. The
-  current MVP assumes a manually selected Morpheus server ID.
+  server ID is currently the initial provisioning server.
+- Controller publish resolves the target Kubernetes node through the
+  `morpheus.csi/server-id` node label and returns that Morpheus server ID in the
+  CSI publish context.
+- Moving an existing CSI volume between Morpheus servers uses the HVM-only
+  server volume detach/attach endpoints:
+  `PUT /api/servers/{id}/volumes/{volumeId}/detach` and
+  `PUT /api/servers/{id}/volumes/{volumeId}/attach`.
 - The node plugin runs privileged and performs a SCSI host rescan before staging
   a volume, because newly attached VM disks may not appear in `lsblk` until the
   bus is rescanned.
 
 ## Known Limitations
 
-- Node/device mapping is not fully automatic yet. The node stage path still needs
-  a usable `morpheus.devicePath` or an equivalent discovery mechanism.
-- Scheduling must currently be aligned with the Morpheus server configured in
-  the `StorageClass`. If the PVC is provisioned on one VM but the pod lands on a
-  different Kubernetes node, the disk will not appear where kubelet needs it.
-- Dynamic per-node Morpheus server lookup is not implemented yet.
+- Every worker that can run CSI-backed pods must be labeled with
+  `morpheus.csi/server-id=<morpheus-server-id>`.
+- Existing volume detach/attach is available for HVM only in Morpheus.
+- New volume creation still uses server resize with `id: -1`; the attach
+  endpoint only applies to existing volumes.
+- Cross-node movement still needs live validation against the target
+  Morpheus/vSphere environment.
 - Snapshots, clones, raw block volumes, topology, health monitoring, and Windows
   nodes are out of scope for the MVP.
 - The Morpheus API behavior around resize, delete, and returned volume metadata
@@ -64,9 +72,16 @@ The most important values are:
 - `MORPHEUS_TOKEN`
 - `MORPHEUS_INSECURE_SKIP_VERIFY`, useful for labs with self-signed certs
 - `MORPHEUS_DEBUG`, optional API request/response logging for troubleshooting
-- `morpheus.serverId`
+- `morpheus.serverId`, the initial Morpheus server used for provisioning
 - `morpheus.storageType`, default example `38`
 - `morpheus.datastoreId`
+
+Label the Kubernetes worker nodes with their Morpheus server IDs:
+
+```sh
+kubectl label node k8s-test-1-worker-1 morpheus.csi/server-id=895
+kubectl label node k8s-test-1-worker-2 morpheus.csi/server-id=896
+```
 
 ## Test PVC
 
@@ -77,8 +92,7 @@ kubectl apply -f deploy/kubernetes/examples/pvc.yaml
 kubectl apply -f deploy/kubernetes/examples/testpod.yaml
 ```
 
-For the current single-server workflow, schedule the test pod onto the Kubernetes
-node that matches `morpheus.serverId`:
+To force a test pod onto a specific labeled worker:
 
 ```sh
 kubectl delete pod morpheus-csi-testpod --ignore-not-found
@@ -129,4 +143,3 @@ lsblk -o NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINT,SERIAL,MODEL
 go test ./...
 go build ./cmd/morpheus-csi
 ```
-

@@ -157,22 +157,16 @@ Candidate Morpheus call:
 PUT /api/servers/{id}/volumes/{volumeId}/attach
 ```
 
-The docs describe this as attaching an existing storage volume to a server, optionally specifying mount point controller and unit number. It is available for HVM.
+The docs describe this as attaching an existing storage volume to a server, optionally specifying mount point controller and unit number. It is available for HVM only. It must not be used for new CSI volume creation; new disks are still created by server resize with `id: -1`.
 
 CSI inputs:
 
 - CSI `VolumeId`: Morpheus storage volume ID.
 - CSI `NodeId`: must map to a Morpheus server ID.
 
-Open mapping question:
+Node mapping:
 
-- Kubernetes node name is not automatically a Morpheus server ID. We need a deterministic node mapping strategy before enabling this capability.
-
-Likely options:
-
-- Node annotation containing Morpheus server ID.
-- Driver startup config mapping Kubernetes node names to Morpheus server IDs.
-- Morpheus lookup by hostname, UUID, or cloud server metadata.
+- Kubernetes node names map to Morpheus server IDs through node label `morpheus.csi/server-id`.
 
 ### `ControllerUnpublishVolume`
 
@@ -221,6 +215,9 @@ type ServerVolumeClient interface {
     DeleteVolume(ctx context.Context, ref VolumeRef) error
     ExpandVolume(ctx context.Context, req ResizeVolumeRequest) (*StorageVolume, error)
     GetVolume(ctx context.Context, ref VolumeRef) (*StorageVolume, error)
+    FindVolume(ctx context.Context, volumeID string, serverIDs []string) (VolumeRef, *StorageVolume, error)
+    MoveVolume(ctx context.Context, req MoveVolumeRequest) (*StorageVolume, error)
+    DetachVolume(ctx context.Context, ref VolumeRef) error
 }
 
 type StorageDiscoveryClient interface {
@@ -228,7 +225,7 @@ type StorageDiscoveryClient interface {
 }
 ```
 
-The first implementation keeps the Morpheus server ID in `StorageClass` and encodes CSI volume IDs as `<serverID>:<volumeID>`.
+The first implementation keeps the Morpheus server ID in `StorageClass` for initial provisioning and encodes CSI volume IDs as `<serverID>:<volumeID>`. Controller publish resolves the target server from Kubernetes node label `morpheus.csi/server-id` and moves existing volumes with HVM-only detach/attach server volume endpoints.
 
 ## StorageClass Draft
 

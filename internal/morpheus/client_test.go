@@ -197,6 +197,62 @@ func TestDeleteVolumeRemovesNonRootVolumeViaResize(t *testing.T) {
 	}
 }
 
+func TestMoveVolumeDetachesSourceThenAttachesExistingVolumeToTarget(t *testing.T) {
+	var calls []string
+	sourceVolumes := []map[string]any{
+		{"id": "root-source", "name": "root", "sizeGiB": 80, "rootVolume": true},
+		{"id": "test-volume-never-real", "name": "pvc-123", "sizeGiB": 14, "rootVolume": false, "storageType": 38, "datastoreId": 40, "controllerMountPoint": "2224:0:4:1", "device": "sdb"},
+	}
+	targetVolumes := []map[string]any{
+		{"id": "root-target", "name": "root", "sizeGiB": 80, "rootVolume": true},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/servers/source-server-never-real":
+			_ = json.NewEncoder(w).Encode(serverResponseWithID("source-server-never-real", sourceVolumes))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/servers/target-server-never-real":
+			_ = json.NewEncoder(w).Encode(serverResponseWithID("target-server-never-real", targetVolumes))
+		case r.Method == http.MethodPut && r.URL.Path == "/api/servers/source-server-never-real/volumes/test-volume-never-real/detach":
+			calls = append(calls, "detach-source")
+			sourceVolumes = []map[string]any{
+				{"id": "root-source", "name": "root", "sizeGiB": 80, "rootVolume": true},
+			}
+		case r.Method == http.MethodPut && r.URL.Path == "/api/servers/target-server-never-real/volumes/test-volume-never-real/attach":
+			if len(calls) != 1 || calls[0] != "detach-source" {
+				t.Fatalf("attach should run after source detach, got calls %#v", calls)
+			}
+			calls = append(calls, "attach-target")
+			targetVolumes = []map[string]any{
+				{"id": "root-target", "name": "root", "sizeGiB": 80, "rootVolume": true},
+				{"id": "test-volume-never-real", "name": "pvc-123", "sizeGiB": 14, "rootVolume": false, "storageType": 38, "datastoreId": 40},
+			}
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, "token")
+	if err != nil {
+		t.Fatalf("NewClient returned error: %v", err)
+	}
+	volume, err := client.MoveVolume(context.Background(), MoveVolumeRequest{
+		VolumeID:           "test-volume-never-real",
+		SourceServerID:     "source-server-never-real",
+		TargetServerID:     "target-server-never-real",
+		CandidateServerIDs: []string{"source-server-never-real", "target-server-never-real"},
+	})
+	if err != nil {
+		t.Fatalf("MoveVolume returned error: %v", err)
+	}
+	if volume.ID != "test-volume-never-real" {
+		t.Fatalf("expected moved volume ID, got %q", volume.ID)
+	}
+	if len(calls) != 2 || calls[0] != "detach-source" || calls[1] != "attach-target" {
+		t.Fatalf("expected detach then attach calls, got %#v", calls)
+	}
+}
+
 func TestExpandVolumeRejectsShrink(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/servers/test-server-never-real" {
@@ -280,9 +336,13 @@ func TestNewClientWithTLSAllowsSelfSignedWhenInsecure(t *testing.T) {
 }
 
 func serverResponse(volumes []map[string]any) map[string]any {
+	return serverResponseWithID("test-server-never-real", volumes)
+}
+
+func serverResponseWithID(id string, volumes []map[string]any) map[string]any {
 	return map[string]any{
 		"server": map[string]any{
-			"id":      "test-server-never-real",
+			"id":      id,
 			"volumes": volumes,
 		},
 	}

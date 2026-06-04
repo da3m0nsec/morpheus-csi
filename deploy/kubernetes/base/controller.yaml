@@ -66,10 +66,13 @@ spec:
             - --endpoint=$(CSI_ENDPOINT)
             - --driver-name=csi.morpheusdata.com
             - --mode=controller
+            - --node-server-id-label=$(NODE_SERVER_ID_LABEL)
             - --log-level=info
           env:
             - name: CSI_ENDPOINT
               value: unix:///csi/csi.sock
+            - name: NODE_SERVER_ID_LABEL
+              value: morpheus.csi/server-id
             - name: MORPHEUS_URL
               valueFrom:
                 secretKeyRef:

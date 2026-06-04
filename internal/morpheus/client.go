@@ -28,6 +28,7 @@ const (
 	ParamConfigPrefix          = "morpheus.config."
 
 	VolumeContextServerID   = "morpheus.serverId"
+	VolumeContextVolumeID   = "morpheus.volumeId"
 	VolumeContextVolumeName = "morpheus.volumeName"
 	VolumeContextDevicePath = "morpheus.devicePath"
 	VolumeContextSizeGiB    = "morpheus.sizeGiB"
@@ -62,11 +63,21 @@ type ResizeVolumeRequest struct {
 	VolumeID     string
 }
 
+type MoveVolumeRequest struct {
+	VolumeID           string
+	SourceServerID     string
+	TargetServerID     string
+	CandidateServerIDs []string
+}
+
 type ServerVolumeClient interface {
 	EnsureVolume(ctx context.Context, req ResizeVolumeRequest) (*StorageVolume, error)
 	DeleteVolume(ctx context.Context, ref VolumeRef) error
 	ExpandVolume(ctx context.Context, req ResizeVolumeRequest) (*StorageVolume, error)
 	GetVolume(ctx context.Context, ref VolumeRef) (*StorageVolume, error)
+	FindVolume(ctx context.Context, volumeID string, serverIDs []string) (VolumeRef, *StorageVolume, error)
+	MoveVolume(ctx context.Context, req MoveVolumeRequest) (*StorageVolume, error)
+	DetachVolume(ctx context.Context, ref VolumeRef) error
 }
 
 type StorageDiscoveryClient interface {
@@ -196,6 +207,76 @@ func (c *Client) DeleteVolume(ctx context.Context, ref VolumeRef) error {
 		}
 	}
 	return c.resizeServer(ctx, state.ID, next)
+}
+
+func (c *Client) FindVolume(ctx context.Context, volumeID string, serverIDs []string) (VolumeRef, *StorageVolume, error) {
+	volumeID = strings.TrimSpace(volumeID)
+	if volumeID == "" {
+		return VolumeRef{}, nil, errors.New("volume id is required")
+	}
+	for _, serverID := range uniqueNonEmpty(serverIDs) {
+		volumes, err := c.getServerVolumes(ctx, serverID)
+		if err != nil {
+			return VolumeRef{}, nil, err
+		}
+		if volume := findVolumeByID(volumes, volumeID); volume != nil {
+			return VolumeRef{ServerID: serverID, VolumeID: volumeID}, volume, nil
+		}
+	}
+	return VolumeRef{}, nil, fmt.Errorf("volume %q was not found on candidate Morpheus servers", volumeID)
+}
+
+func (c *Client) MoveVolume(ctx context.Context, req MoveVolumeRequest) (*StorageVolume, error) {
+	if strings.TrimSpace(req.TargetServerID) == "" {
+		return nil, errors.New("target server id is required")
+	}
+	sourceRef, volume, err := c.FindVolume(ctx, req.VolumeID, append(req.CandidateServerIDs, req.SourceServerID, req.TargetServerID))
+	if err != nil {
+		return nil, err
+	}
+	if sourceRef.ServerID == req.TargetServerID {
+		return volume, nil
+	}
+	if volume.RootVolume {
+		return nil, fmt.Errorf("refusing to move root volume %q", req.VolumeID)
+	}
+
+	if err := c.DetachVolume(ctx, sourceRef); err != nil {
+		return nil, err
+	}
+	targetRef := VolumeRef{ServerID: req.TargetServerID, VolumeID: req.VolumeID}
+	if err := c.attachVolume(ctx, targetRef); err != nil {
+		return nil, err
+	}
+
+	for attempt := 0; attempt < postResizeVolumeLookupAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(postResizeVolumeLookupInterval):
+			}
+		}
+		moved, err := c.GetVolume(ctx, targetRef)
+		if err == nil {
+			return moved, nil
+		}
+	}
+	return nil, fmt.Errorf("Morpheus attach completed but volume %q was not found on server %q", req.VolumeID, req.TargetServerID)
+}
+
+func (c *Client) DetachVolume(ctx context.Context, ref VolumeRef) error {
+	if err := validateRef(ref); err != nil {
+		return err
+	}
+	return c.do(ctx, http.MethodPut, "/api/servers/"+url.PathEscape(ref.ServerID)+"/volumes/"+url.PathEscape(ref.VolumeID)+"/detach", nil, nil, nil)
+}
+
+func (c *Client) attachVolume(ctx context.Context, ref VolumeRef) error {
+	if err := validateRef(ref); err != nil {
+		return err
+	}
+	return c.do(ctx, http.MethodPut, "/api/servers/"+url.PathEscape(ref.ServerID)+"/volumes/"+url.PathEscape(ref.VolumeID)+"/attach", nil, nil, nil)
 }
 
 func (c *Client) ExpandVolume(ctx context.Context, req ResizeVolumeRequest) (*StorageVolume, error) {
@@ -702,4 +783,21 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func uniqueNonEmpty(values []string) []string {
+	seen := map[string]struct{}{}
+	var result []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }

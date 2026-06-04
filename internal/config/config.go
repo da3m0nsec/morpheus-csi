@@ -25,15 +25,17 @@ type Config struct {
 	MorpheusCAFile             string
 	MorpheusInsecureSkipVerify bool
 	MorpheusDebug              bool
+	NodeServerIDLabel          string
 }
 
 func Default() Config {
 	return Config{
-		Endpoint:        "unix:///csi/csi.sock",
-		DriverName:      "csi.morpheusdata.com",
-		Mode:            ModeAll,
-		KubeletRootPath: "/var/lib/kubelet",
-		LogLevel:        "info",
+		Endpoint:          "unix:///csi/csi.sock",
+		DriverName:        "csi.morpheusdata.com",
+		Mode:              ModeAll,
+		KubeletRootPath:   "/var/lib/kubelet",
+		LogLevel:          "info",
+		NodeServerIDLabel: "morpheus.csi/server-id",
 	}
 }
 
@@ -47,6 +49,9 @@ func (c Config) Validate() error {
 
 	switch c.Mode {
 	case ModeAll, ModeController:
+		if strings.TrimSpace(c.NodeServerIDLabel) == "" {
+			return errors.New("node-server-id-label is required in controller mode")
+		}
 		if strings.TrimSpace(c.MorpheusURL) == "" {
 			return errors.New("MORPHEUS_URL is required in controller mode")
 		}

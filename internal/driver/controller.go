@@ -54,6 +54,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 	serverID := morpheus.StorageClassServerID(req.GetParameters())
 	context := map[string]string{
 		morpheus.VolumeContextServerID:   serverID,
+		morpheus.VolumeContextVolumeID:   volume.ID,
 		morpheus.VolumeContextVolumeName: volume.Name,
 		morpheus.VolumeContextSizeGiB:    strconv.FormatInt(sizeGiB, 10),
 	}
@@ -80,7 +81,14 @@ func (d *Driver) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := d.volumes.DeleteVolume(ctx, ref); err != nil {
+	currentRef := ref
+	if candidates := d.candidateServerIDs(ctx, ref.ServerID); len(candidates) > 0 {
+		foundRef, _, err := d.volumes.FindVolume(ctx, ref.VolumeID, candidates)
+		if err == nil {
+			currentRef = foundRef
+		}
+	}
+	if err := d.volumes.DeleteVolume(ctx, currentRef); err != nil {
 		return nil, status.Errorf(codes.Internal, "delete Morpheus server volume: %v", err)
 	}
 	return &csi.DeleteVolumeResponse{}, nil
@@ -97,16 +105,24 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 	if strings.TrimSpace(req.GetNodeId()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "node id is required")
 	}
-	if contextServer := strings.TrimSpace(req.GetVolumeContext()[morpheus.VolumeContextServerID]); contextServer != "" && contextServer != ref.ServerID {
-		return nil, status.Errorf(codes.FailedPrecondition, "volume server %q does not match context server %q", ref.ServerID, contextServer)
-	}
-	volume, err := d.volumes.GetVolume(ctx, ref)
+	targetServerID, err := d.serverIDForNode(ctx, req.GetNodeId(), ref.ServerID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "get Morpheus server volume: %v", err)
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
+	candidates := d.candidateServerIDs(ctx, ref.ServerID, targetServerID)
+	volume, err := d.volumes.MoveVolume(ctx, morpheus.MoveVolumeRequest{
+		VolumeID:           ref.VolumeID,
+		SourceServerID:     ref.ServerID,
+		TargetServerID:     targetServerID,
+		CandidateServerIDs: candidates,
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "attach Morpheus server volume to node %q: %v", req.GetNodeId(), err)
 	}
 
 	publishContext := map[string]string{
-		morpheus.VolumeContextServerID:   ref.ServerID,
+		morpheus.VolumeContextServerID:   targetServerID,
+		morpheus.VolumeContextVolumeID:   ref.VolumeID,
 		morpheus.VolumeContextVolumeName: volume.Name,
 	}
 	if sizeGiB := strings.TrimSpace(req.GetVolumeContext()[morpheus.VolumeContextSizeGiB]); sizeGiB != "" {
@@ -122,11 +138,19 @@ func (d *Driver) ControllerUnpublishVolume(ctx context.Context, req *csi.Control
 	if d.volumes == nil {
 		return nil, status.Error(codes.Unavailable, "Morpheus controller client is not configured")
 	}
-	if _, err := morpheus.DecodeVolumeID(req.GetVolumeId()); err != nil {
+	ref, err := morpheus.DecodeVolumeID(req.GetVolumeId())
+	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if strings.TrimSpace(req.GetNodeId()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "node id is required")
+	}
+	serverID, err := d.serverIDForNode(ctx, req.GetNodeId(), ref.ServerID)
+	if err != nil {
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
+	if err := d.volumes.DetachVolume(ctx, morpheus.VolumeRef{ServerID: serverID, VolumeID: ref.VolumeID}); err != nil {
+		return nil, status.Errorf(codes.Internal, "detach Morpheus server volume from node %q: %v", req.GetNodeId(), err)
 	}
 	return &csi.ControllerUnpublishVolumeResponse{}, nil
 }
@@ -172,6 +196,48 @@ func controllerCapability(capability csi.ControllerServiceCapability_RPC_Type) *
 			},
 		},
 	}
+}
+
+func (d *Driver) serverIDForNode(ctx context.Context, nodeID string, fallback string) (string, error) {
+	if d.nodes == nil {
+		if strings.TrimSpace(fallback) != "" {
+			return strings.TrimSpace(fallback), nil
+		}
+		return "", errors.New("Kubernetes node server resolver is not configured")
+	}
+	serverID, err := d.nodes.ServerIDForNode(ctx, nodeID)
+	if err != nil {
+		return "", err
+	}
+	return serverID, nil
+}
+
+func (d *Driver) candidateServerIDs(ctx context.Context, extra ...string) []string {
+	var candidates []string
+	if d.nodes != nil {
+		if serverIDs, err := d.nodes.ServerIDs(ctx); err == nil {
+			candidates = append(candidates, serverIDs...)
+		}
+	}
+	candidates = append(candidates, extra...)
+	return uniqueStrings(candidates)
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	var result []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 const gibibyte int64 = 1024 * 1024 * 1024

@@ -22,6 +22,7 @@ func main() {
 	flag.StringVar(&cfg.NodeID, "node-id", cfg.NodeID, "CSI node ID")
 	flag.StringVar(&cfg.KubeletRootPath, "kubelet-root-path", cfg.KubeletRootPath, "kubelet root path")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level")
+	flag.StringVar(&cfg.NodeServerIDLabel, "node-server-id-label", cfg.NodeServerIDLabel, "Kubernetes node label containing the Morpheus server ID")
 	flag.Parse()
 
 	cfg.MorpheusURL = os.Getenv("MORPHEUS_URL")
@@ -29,6 +30,9 @@ func main() {
 	cfg.MorpheusCAFile = os.Getenv("MORPHEUS_CA_FILE")
 	cfg.MorpheusInsecureSkipVerify, _ = strconv.ParseBool(os.Getenv("MORPHEUS_INSECURE_SKIP_VERIFY"))
 	cfg.MorpheusDebug, _ = strconv.ParseBool(os.Getenv("MORPHEUS_DEBUG"))
+	if value := os.Getenv("MORPHEUS_NODE_SERVER_ID_LABEL"); value != "" {
+		cfg.NodeServerIDLabel = value
+	}
 
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("invalid configuration: %v", err)
