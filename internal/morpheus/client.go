@@ -30,6 +30,7 @@ const (
 	VolumeContextServerID   = "morpheus.serverId"
 	VolumeContextVolumeName = "morpheus.volumeName"
 	VolumeContextDevicePath = "morpheus.devicePath"
+	VolumeContextSizeGiB    = "morpheus.sizeGiB"
 
 	defaultStorageType = "38"
 	bytesPerGiB        = 1024 * 1024 * 1024

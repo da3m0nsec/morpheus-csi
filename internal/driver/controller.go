@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -54,6 +55,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 	context := map[string]string{
 		morpheus.VolumeContextServerID:   serverID,
 		morpheus.VolumeContextVolumeName: volume.Name,
+		morpheus.VolumeContextSizeGiB:    strconv.FormatInt(sizeGiB, 10),
 	}
 	if volume.DevicePath != "" {
 		context[morpheus.VolumeContextDevicePath] = volume.DevicePath
@@ -106,6 +108,9 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 	publishContext := map[string]string{
 		morpheus.VolumeContextServerID:   ref.ServerID,
 		morpheus.VolumeContextVolumeName: volume.Name,
+	}
+	if sizeGiB := strings.TrimSpace(req.GetVolumeContext()[morpheus.VolumeContextSizeGiB]); sizeGiB != "" {
+		publishContext[morpheus.VolumeContextSizeGiB] = sizeGiB
 	}
 	if volume != nil && volume.DevicePath != "" {
 		publishContext[morpheus.VolumeContextDevicePath] = volume.DevicePath

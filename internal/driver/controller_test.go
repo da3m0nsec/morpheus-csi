@@ -41,6 +41,9 @@ func TestCreateVolumeEnsuresServerVolume(t *testing.T) {
 	if fake.ensureRequest.SizeGiB != 10 {
 		t.Fatalf("expected size 10GiB, got %dGiB", fake.ensureRequest.SizeGiB)
 	}
+	if resp.GetVolume().GetVolumeContext()[morpheus.VolumeContextSizeGiB] != "10" {
+		t.Fatalf("expected volume context size 10GiB, got %q", resp.GetVolume().GetVolumeContext()[morpheus.VolumeContextSizeGiB])
+	}
 }
 
 func TestCreateVolumeRejectsMissingServerID(t *testing.T) {
@@ -121,7 +124,7 @@ func TestControllerExpandVolumeUsesServerResize(t *testing.T) {
 }
 
 func TestNodeStageRequiresDevicePath(t *testing.T) {
-	driver := NewWithDependencies(config.Config{NodeID: "worker-1"}, log.Default(), nil, nil, &fakeMounter{})
+	driver := NewWithDependencies(config.Config{NodeID: "worker-1"}, log.Default(), nil, nil, &fakeMounter{discoverErr: errors.New("no candidate")})
 
 	_, err := driver.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
 		VolumeId:          "test-server-never-real:test-volume-never-real",
@@ -130,6 +133,32 @@ func TestNodeStageRequiresDevicePath(t *testing.T) {
 	})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("expected FailedPrecondition, got %v", err)
+	}
+}
+
+func TestNodeStageDiscoversDevicePathWhenPublishContextIsMissing(t *testing.T) {
+	mounter := &fakeMounter{discoverPath: "/dev/disk/by-path/test-disk"}
+	driver := NewWithDependencies(config.Config{NodeID: "worker-1"}, log.Default(), nil, nil, mounter)
+
+	_, err := driver.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          "test-server-never-real:test-volume-never-real",
+		StagingTargetPath: "/var/lib/kubelet/plugins/kubernetes.io/csi/pv/42/globalmount",
+		VolumeCapability:  mountCapability(),
+		VolumeContext: map[string]string{
+			morpheus.VolumeContextSizeGiB: "14",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NodeStageVolume returned error: %v", err)
+	}
+	if !mounter.rescanCalled {
+		t.Fatal("expected node rescan before staging")
+	}
+	if mounter.discoverSizeGiB != 14 {
+		t.Fatalf("expected discovery size 14GiB, got %dGiB", mounter.discoverSizeGiB)
+	}
+	if mounter.stageDevicePath != "/dev/disk/by-path/test-disk" {
+		t.Fatalf("expected discovered device path to be staged, got %q", mounter.stageDevicePath)
 	}
 }
 
@@ -217,12 +246,17 @@ func (f *fakeMorpheus) ValidateStorageClass(_ context.Context, parameters map[st
 }
 
 type fakeMounter struct {
-	expandCalled bool
-	expandPath   string
-	rescanCalled bool
+	expandCalled    bool
+	expandPath      string
+	rescanCalled    bool
+	discoverPath    string
+	discoverErr     error
+	discoverSizeGiB int64
+	stageDevicePath string
 }
 
-func (f *fakeMounter) Stage(context.Context, string, string, string, bool) error {
+func (f *fakeMounter) Stage(_ context.Context, devicePath string, _ string, _ string, _ bool) error {
+	f.stageDevicePath = devicePath
 	return nil
 }
 
@@ -243,4 +277,15 @@ func (f *fakeMounter) ExpandFilesystem(_ context.Context, volumePath string, _ s
 func (f *fakeMounter) RescanDevices(context.Context) error {
 	f.rescanCalled = true
 	return nil
+}
+
+func (f *fakeMounter) DiscoverDevicePath(_ context.Context, sizeGiB int64) (string, error) {
+	f.discoverSizeGiB = sizeGiB
+	if f.discoverErr != nil {
+		return "", f.discoverErr
+	}
+	if f.discoverPath == "" {
+		return "", errors.New("missing fake discovered device path")
+	}
+	return f.discoverPath, nil
 }

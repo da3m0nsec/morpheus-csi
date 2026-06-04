@@ -3,12 +3,16 @@ package driver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
+	"github.com/da3m0nsec/morpheus-csi/internal/morpheus"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -45,7 +49,14 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	}
 	devicePath := devicePath(req.GetPublishContext(), req.GetVolumeContext())
 	if devicePath == "" {
-		return nil, status.Error(codes.FailedPrecondition, "Morpheus attach response did not include morpheus.devicePath after node SCSI rescan")
+		discovered, err := d.mounter.DiscoverDevicePath(ctx, volumeSizeGiB(req.GetPublishContext(), req.GetVolumeContext()))
+		if err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "Morpheus attach response did not include morpheus.devicePath and node discovery failed after SCSI rescan: %v", err)
+		}
+		devicePath = discovered
+		if d.logger != nil {
+			d.logger.Printf("discovered Morpheus volume %q device path %s after SCSI rescan", volumeID, devicePath)
+		}
 	}
 	fsType := filesystemType(req.GetVolumeCapability(), req.GetVolumeContext())
 	if err := d.mounter.Stage(ctx, devicePath, stagingPath, fsType, false); err != nil {
@@ -141,6 +152,7 @@ type Mounter interface {
 	Unmount(ctx context.Context, target string) error
 	ExpandFilesystem(ctx context.Context, volumePath string, fsType string) error
 	RescanDevices(ctx context.Context) error
+	DiscoverDevicePath(ctx context.Context, sizeGiB int64) (string, error)
 }
 
 type realMounter struct{}
@@ -236,18 +248,138 @@ func (realMounter) RescanDevices(ctx context.Context) error {
 	return settleUdev(ctx)
 }
 
+func (realMounter) DiscoverDevicePath(ctx context.Context, sizeGiB int64) (string, error) {
+	candidates, err := candidateBlockDevices(ctx, sizeGiB)
+	if err != nil {
+		return "", err
+	}
+	if len(candidates) == 0 {
+		if sizeGiB > 0 {
+			return "", fmt.Errorf("no unmounted block device found matching %dGiB", sizeGiB)
+		}
+		return "", errors.New("no unmounted block device candidates found")
+	}
+	if len(candidates) > 1 {
+		return "", fmt.Errorf("multiple unmounted block device candidates found: %s", strings.Join(candidates, ", "))
+	}
+	return candidates[0], nil
+}
+
 func rescanSCSIHosts() error {
 	paths, err := filepath.Glob("/sys/class/scsi_host/host*/scan")
 	if err != nil {
 		return err
 	}
+	if len(paths) == 0 {
+		return errors.New("no SCSI host scan targets found under /sys/class/scsi_host")
+	}
 	var errs []error
 	for _, path := range paths {
-		if err := os.WriteFile(path, []byte("- - -"), 0200); err != nil {
+		if err := os.WriteFile(path, []byte("- - -\n"), 0200); err != nil {
 			errs = append(errs, fmtMountError(path, err))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func candidateBlockDevices(ctx context.Context, sizeGiB int64) ([]string, error) {
+	entries, err := os.ReadDir("/sys/block")
+	if err != nil {
+		return nil, err
+	}
+	var candidates []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.IsDir() || skipBlockDevice(name) {
+			continue
+		}
+		if hasPartitions(name) {
+			continue
+		}
+		if sizeGiB > 0 {
+			deviceSizeGiB, err := blockDeviceSizeGiB(name)
+			if err != nil || deviceSizeGiB != sizeGiB {
+				continue
+			}
+		}
+		path := "/dev/" + name
+		formatted, err := hasFilesystem(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+		if formatted {
+			continue
+		}
+		if mounted, err := isMountedSource(path); err != nil || mounted {
+			if err != nil {
+				return nil, err
+			}
+			continue
+		}
+		candidates = append(candidates, stableDevicePath(name))
+	}
+	sort.Strings(candidates)
+	return candidates, nil
+}
+
+func skipBlockDevice(name string) bool {
+	for _, prefix := range []string{"loop", "nbd", "ram", "zram", "dm-", "sr", "fd"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPartitions(name string) bool {
+	matches, _ := filepath.Glob("/sys/block/" + name + "/" + name + "*")
+	for _, match := range matches {
+		if _, err := os.Stat(filepath.Join(match, "partition")); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func blockDeviceSizeGiB(name string) (int64, error) {
+	data, err := os.ReadFile("/sys/block/" + name + "/size")
+	if err != nil {
+		return 0, err
+	}
+	sectors, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	bytes := sectors * 512
+	return (bytes + gibibyte - 1) / gibibyte, nil
+}
+
+func stableDevicePath(name string) string {
+	matches, _ := filepath.Glob("/dev/disk/by-path/*")
+	for _, match := range matches {
+		target, err := filepath.EvalSymlinks(match)
+		if err == nil && target == "/dev/"+name {
+			return match
+		}
+	}
+	return "/dev/" + name
+}
+
+func isMountedSource(source string) (bool, error) {
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 10 && fields[len(fields)-2] == source {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func settleUdev(ctx context.Context) error {
@@ -266,6 +398,20 @@ func devicePath(maps ...map[string]string) string {
 		}
 	}
 	return ""
+}
+
+func volumeSizeGiB(maps ...map[string]string) int64 {
+	for _, values := range maps {
+		value := strings.TrimSpace(values[morpheus.VolumeContextSizeGiB])
+		if value == "" {
+			continue
+		}
+		parsed, _ := strconv.ParseInt(value, 10, 64)
+		if parsed > 0 {
+			return parsed
+		}
+	}
+	return 0
 }
 
 func filesystemType(capability *csi.VolumeCapability, volumeContext map[string]string) string {
