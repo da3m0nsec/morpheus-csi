@@ -320,16 +320,31 @@ func (realMounter) DiscoverDevicePath(ctx context.Context, sizeGiB int64) (strin
 			}
 		}
 
-		candidates, err := candidateBlockDevices(ctx, sizeGiB)
+		unformatted, formatted, err := classifyBlockDevices(ctx, sizeGiB)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		if len(candidates) == 1 {
-			return candidates[0], nil
+		// Prefer a single freshly attached, unformatted disk: the common
+		// case for a newly created Morpheus volume that the node will format.
+		if len(unformatted) == 1 {
+			return unformatted[0], nil
 		}
-		if len(candidates) > 1 {
-			return "", fmt.Errorf("multiple unmounted block device candidates found: %s", strings.Join(candidates, ", "))
+		if len(unformatted) > 1 {
+			return "", fmt.Errorf("multiple unmounted unformatted block device candidates found: %s", strings.Join(unformatted, ", "))
+		}
+		// No blank disk. When a previously formatted volume is re-attached to
+		// this node (for example after a pod reschedule) the disk already
+		// carries a filesystem, so fall back to a single unmounted formatted
+		// disk of the requested size. A size hint is required so we never
+		// grab an unrelated formatted disk.
+		if sizeGiB > 0 {
+			if len(formatted) == 1 {
+				return formatted[0], nil
+			}
+			if len(formatted) > 1 {
+				return "", fmt.Errorf("multiple unmounted block device candidates found: %s", strings.Join(formatted, ", "))
+			}
 		}
 		if sizeGiB > 0 {
 			lastErr = fmt.Errorf("no unmounted block device found matching %dGiB", sizeGiB)
@@ -535,12 +550,24 @@ func sleepDiscoveryInterval(ctx context.Context) error {
 	}
 }
 
+// candidateBlockDevices returns unmounted, unpartitioned, size-matching block
+// devices that do not yet carry a filesystem, i.e. freshly attached blank
+// disks ready to be formatted and staged.
 func candidateBlockDevices(ctx context.Context, sizeGiB int64) ([]string, error) {
+	unformatted, _, err := classifyBlockDevices(ctx, sizeGiB)
+	return unformatted, err
+}
+
+// classifyBlockDevices scans for safe staging candidates and splits them by
+// whether they already carry a filesystem. Both lists exclude devices that are
+// skipped by prefix, partitioned, mounted, or that do not match sizeGiB (when a
+// size hint is provided), so callers can prefer a blank disk for a new volume
+// while still recovering an already-formatted disk on re-attach.
+func classifyBlockDevices(ctx context.Context, sizeGiB int64) (unformatted []string, formatted []string, err error) {
 	entries, err := os.ReadDir(sysBlockRoot)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var candidates []string
 	for _, entry := range entries {
 		name := entry.Name()
 		if !entry.IsDir() || skipBlockDevice(name) {
@@ -556,23 +583,24 @@ func candidateBlockDevices(ctx context.Context, sizeGiB int64) ([]string, error)
 			}
 		}
 		path := filepath.Join(devRoot, name)
-		formatted, err := hasFilesystemFunc(ctx, path)
+		if mounted, err := isMountedSource(path); err != nil {
+			return nil, nil, err
+		} else if mounted {
+			continue
+		}
+		hasFS, err := hasFilesystemFunc(ctx, path)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		if formatted {
-			continue
+		if hasFS {
+			formatted = append(formatted, stableDevicePath(name))
+		} else {
+			unformatted = append(unformatted, stableDevicePath(name))
 		}
-		if mounted, err := isMountedSource(path); err != nil || mounted {
-			if err != nil {
-				return nil, err
-			}
-			continue
-		}
-		candidates = append(candidates, stableDevicePath(name))
 	}
-	sort.Strings(candidates)
-	return candidates, nil
+	sort.Strings(unformatted)
+	sort.Strings(formatted)
+	return unformatted, formatted, nil
 }
 
 func skipBlockDevice(name string) bool {

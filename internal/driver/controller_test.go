@@ -429,6 +429,65 @@ func TestCandidateBlockDevicesIgnoresUnsafeDevices(t *testing.T) {
 	})
 }
 
+func TestClassifyBlockDevicesSeparatesFormattedDisks(t *testing.T) {
+	withFakeDeviceTree(t, []fakeBlockDevice{
+		{name: "sdb", sizeGiB: 14},
+		{name: "sdc", sizeGiB: 14, formatted: true},
+	}, "", func(devRoot string) {
+		unformatted, formatted, err := classifyBlockDevices(context.Background(), 14)
+		if err != nil {
+			t.Fatalf("classifyBlockDevices returned error: %v", err)
+		}
+		if len(unformatted) != 1 || unformatted[0] != filepath.Join(devRoot, "sdb") {
+			t.Fatalf("expected only blank disk sdb to be unformatted, got %#v", unformatted)
+		}
+		if len(formatted) != 1 || formatted[0] != filepath.Join(devRoot, "sdc") {
+			t.Fatalf("expected only sdc to be formatted, got %#v", formatted)
+		}
+	})
+}
+
+func TestDiscoverDevicePathPrefersBlankDiskOverFormatted(t *testing.T) {
+	withFakeDeviceTree(t, []fakeBlockDevice{
+		{name: "sdb", sizeGiB: 14, formatted: true},
+		{name: "sdc", sizeGiB: 14},
+	}, "", func(devRoot string) {
+		path, err := realMounter{}.DiscoverDevicePath(context.Background(), 14)
+		if err != nil {
+			t.Fatalf("DiscoverDevicePath returned error: %v", err)
+		}
+		if expected := filepath.Join(devRoot, "sdc"); path != expected {
+			t.Fatalf("expected fresh blank disk %q, got %q", expected, path)
+		}
+	})
+}
+
+func TestDiscoverDevicePathFallsBackToFormattedDiskOnReattach(t *testing.T) {
+	withFakeDeviceTree(t, []fakeBlockDevice{
+		{name: "sdb", sizeGiB: 14, formatted: true},
+		{name: "sdc", sizeGiB: 10, formatted: true},
+	}, "", func(devRoot string) {
+		path, err := realMounter{}.DiscoverDevicePath(context.Background(), 14)
+		if err != nil {
+			t.Fatalf("DiscoverDevicePath returned error: %v", err)
+		}
+		if expected := filepath.Join(devRoot, "sdb"); path != expected {
+			t.Fatalf("expected re-attached formatted disk %q, got %q", expected, path)
+		}
+	})
+}
+
+func TestDiscoverDevicePathRejectsAmbiguousFormattedReattach(t *testing.T) {
+	withFakeDeviceTree(t, []fakeBlockDevice{
+		{name: "sdb", sizeGiB: 14, formatted: true},
+		{name: "sdc", sizeGiB: 14, formatted: true},
+	}, "", func(string) {
+		if _, err := (realMounter{}).DiscoverDevicePath(context.Background(), 14); err == nil {
+			t.Fatal("expected ambiguous formatted re-attach candidates to fail")
+		}
+	})
+}
+
 func TestNodeUnstageUnmountsBeforeRemovingDevice(t *testing.T) {
 	mounter := &fakeMounter{mountedSource: "/dev/sdb"}
 	driver := NewWithDependencies(config.Config{NodeID: "worker-1"}, log.Default(), nil, nil, mounter)
