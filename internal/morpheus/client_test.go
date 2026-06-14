@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestEnsureVolumeReturnsExistingCompatibleVolume(t *testing.T) {
@@ -303,6 +305,92 @@ func TestResolveServerIDByNodeNameRejectsAmbiguousMatches(t *testing.T) {
 	}
 	if _, err := client.ResolveServerIDByNodeName(context.Background(), "worker-prefix"); err == nil {
 		t.Fatal("expected ambiguous node lookup to fail")
+	}
+}
+
+func TestEnsureVolumeSerializesConcurrentResizesOnSameServer(t *testing.T) {
+	// The resize endpoint replaces the server's whole volume array. Without
+	// per-server serialization, two concurrent creates both read the initial
+	// state and the second PUT clobbers the first volume. This stateful fake
+	// adds latency between read and write to widen that race window.
+	var mu sync.Mutex
+	volumes := []map[string]any{
+		{"id": "root", "name": "root", "sizeGiB": 20, "rootVolume": true},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/servers/test-server-never-real":
+			mu.Lock()
+			snapshot := append([]map[string]any(nil), volumes...)
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(serverResponse(snapshot))
+		case r.Method == http.MethodPut && r.URL.Path == "/api/servers/test-server-never-real/resize":
+			var payload struct {
+				Volumes []map[string]any `json:"volumes"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode resize payload: %v", err)
+			}
+			// Simulate non-atomic apply latency on the Morpheus side.
+			time.Sleep(20 * time.Millisecond)
+			mu.Lock()
+			next := make([]map[string]any, 0, len(payload.Volumes))
+			for _, v := range payload.Volumes {
+				name, _ := v["name"].(string)
+				id := v["id"]
+				if idf, ok := id.(float64); ok && idf == -1 {
+					id = "vol-" + name
+				}
+				next = append(next, map[string]any{
+					"id":         id,
+					"name":       name,
+					"sizeGiB":    v["size"],
+					"rootVolume": v["rootVolume"],
+				})
+			}
+			volumes = next
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, "token")
+	if err != nil {
+		t.Fatalf("NewClient returned error: %v", err)
+	}
+
+	names := []string{"pvc-a", "pvc-b"}
+	errs := make([]error, len(names))
+	var wg sync.WaitGroup
+	for i, name := range names {
+		wg.Add(1)
+		go func(i int, name string) {
+			defer wg.Done()
+			_, errs[i] = client.EnsureVolume(context.Background(), ResizeVolumeRequest{
+				Name:    name,
+				SizeGiB: 10,
+				StorageClass: map[string]string{
+					ParamServerID: "test-server-never-real",
+				},
+			})
+		}(i, name)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("EnsureVolume(%q) returned error: %v", names[i], err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(volumes) != 3 {
+		t.Fatalf("expected root plus both new volumes to survive (3), got %d: %#v", len(volumes), volumes)
 	}
 }
 

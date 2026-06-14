@@ -15,6 +15,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -105,6 +106,14 @@ type Client struct {
 	token       string
 	httpClient  *http.Client
 	debugLogger *log.Logger
+
+	// serverLocks serializes read-modify-write resize operations per
+	// Morpheus server. The resize endpoint replaces the server's entire
+	// volume array, so concurrent mutations on the same server (which the
+	// external-provisioner/resizer can issue) would otherwise read the same
+	// pre-existing array and clobber each other, silently dropping volumes.
+	serverLocksMu sync.Mutex
+	serverLocks   map[string]*sync.Mutex
 }
 
 func NewClient(rawURL string, token string) (*Client, error) {
@@ -153,6 +162,25 @@ func NewClientWithHTTPClient(rawURL string, token string, httpClient *http.Clien
 
 func (c *Client) SetDebugLogger(logger *log.Logger) {
 	c.debugLogger = logger
+}
+
+// lockServer acquires the per-server mutex guarding read-modify-write resize
+// operations and returns a function that releases it.
+func (c *Client) lockServer(serverID string) func() {
+	serverID = strings.TrimSpace(serverID)
+	c.serverLocksMu.Lock()
+	if c.serverLocks == nil {
+		c.serverLocks = map[string]*sync.Mutex{}
+	}
+	mu, ok := c.serverLocks[serverID]
+	if !ok {
+		mu = &sync.Mutex{}
+		c.serverLocks[serverID] = mu
+	}
+	c.serverLocksMu.Unlock()
+
+	mu.Lock()
+	return mu.Unlock
 }
 
 func EncodeVolumeID(serverID string, volumeID string) string {
@@ -216,6 +244,7 @@ func (c *Client) EnsureVolume(ctx context.Context, req ResizeVolumeRequest) (*St
 	}
 
 	serverID := StorageClassServerID(req.StorageClass)
+	defer c.lockServer(serverID)()
 	state, err := c.getServerState(ctx, serverID)
 	if err != nil {
 		return nil, err
@@ -235,6 +264,7 @@ func (c *Client) DeleteVolume(ctx context.Context, ref VolumeRef) error {
 	if err := validateRef(ref); err != nil {
 		return err
 	}
+	defer c.lockServer(ref.ServerID)()
 	state, err := c.getServerState(ctx, ref.ServerID)
 	if err != nil {
 		return err
@@ -334,6 +364,7 @@ func (c *Client) ExpandVolume(ctx context.Context, req ResizeVolumeRequest) (*St
 		return nil, errors.New("volume id is required")
 	}
 	serverID := StorageClassServerID(req.StorageClass)
+	defer c.lockServer(serverID)()
 	state, err := c.getServerState(ctx, serverID)
 	if err != nil {
 		return nil, err

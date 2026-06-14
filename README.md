@@ -32,6 +32,12 @@ new disk.
 - The node plugin runs privileged and performs repeated SCSI host rescans before
   staging a volume, because newly attached VM disks may not appear in `lsblk`
   immediately after Morpheus attaches them.
+- When Morpheus does not return a Linux device path, the node plugin discovers
+  the attached disk by scanning for an unmounted, unpartitioned, size-matching
+  block device. It prefers a blank (unformatted) disk for a newly created
+  volume, and falls back to a single already-formatted disk of the requested
+  size when an existing volume is re-attached to the node (for example after a
+  pod reschedule). Ambiguous matches are rejected rather than guessed.
 
 ## Known Limitations
 
