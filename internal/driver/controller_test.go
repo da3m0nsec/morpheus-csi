@@ -52,6 +52,31 @@ func TestCreateVolumeEnsuresServerVolume(t *testing.T) {
 	}
 }
 
+func TestControllerRPCsReturnUnavailableWhenMorpheusClientUnconfigured(t *testing.T) {
+	// config.Default has no Morpheus URL/token, so New cannot build a
+	// Morpheus client. The controller guards must report Unavailable rather
+	// than leaving a typed-nil *morpheus.Client in the interface field, which
+	// would slip past the nil check and panic on the first API call.
+	driver := New(config.Default(), log.Default())
+
+	_, err := driver.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name:               "pvc-123",
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: gibibyte},
+		VolumeCapabilities: []*csi.VolumeCapability{mountCapability()},
+		Parameters:         map[string]string{morpheus.ParamServerID: "test-server-never-real"},
+	})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("expected Unavailable from CreateVolume, got %v", err)
+	}
+
+	_, err = driver.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{
+		VolumeId: "test-server-never-real:test-volume-never-real",
+	})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("expected Unavailable from DeleteVolume, got %v", err)
+	}
+}
+
 func TestCreateVolumeRejectsMissingServerID(t *testing.T) {
 	fake := &fakeMorpheus{}
 	driver := NewWithDependencies(config.Default(), log.Default(), fake, fake, &fakeMounter{})
