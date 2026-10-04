@@ -52,14 +52,22 @@ func New(cfg config.Config, logger *log.Logger) *Driver {
 		logger.Printf("Kubernetes node server resolver is not configured: %v", err)
 	}
 
-	return &Driver{
-		cfg:       cfg,
-		logger:    logger,
-		volumes:   client,
-		discovery: client,
-		mounter:   newRealMounter(cfg.KubeletRootPath, cfg.DriverName),
-		nodes:     nodes,
+	d := &Driver{
+		cfg:     cfg,
+		logger:  logger,
+		mounter: newRealMounter(cfg.KubeletRootPath, cfg.DriverName),
+		nodes:   nodes,
 	}
+	// Only wire the Morpheus client into the interface fields when it is
+	// usable. Assigning a nil *morpheus.Client would leave the interface
+	// holding a typed nil, which is not == nil, defeating the
+	// "controller client is not configured" guards and turning a clean
+	// Unavailable error into a nil-pointer panic on the first RPC.
+	if client != nil {
+		d.volumes = client
+		d.discovery = client
+	}
+	return d
 }
 
 func NewWithDependencies(

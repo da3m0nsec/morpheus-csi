@@ -52,6 +52,31 @@ func TestCreateVolumeEnsuresServerVolume(t *testing.T) {
 	}
 }
 
+func TestControllerRPCsReturnUnavailableWhenMorpheusClientUnconfigured(t *testing.T) {
+	// config.Default has no Morpheus URL/token, so New cannot build a
+	// Morpheus client. The controller guards must report Unavailable rather
+	// than leaving a typed-nil *morpheus.Client in the interface field, which
+	// would slip past the nil check and panic on the first API call.
+	driver := New(config.Default(), log.Default())
+
+	_, err := driver.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name:               "pvc-123",
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: gibibyte},
+		VolumeCapabilities: []*csi.VolumeCapability{mountCapability()},
+		Parameters:         map[string]string{morpheus.ParamServerID: "test-server-never-real"},
+	})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("expected Unavailable from CreateVolume, got %v", err)
+	}
+
+	_, err = driver.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{
+		VolumeId: "test-server-never-real:test-volume-never-real",
+	})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("expected Unavailable from DeleteVolume, got %v", err)
+	}
+}
+
 func TestCreateVolumeRejectsMissingServerID(t *testing.T) {
 	fake := &fakeMorpheus{}
 	driver := NewWithDependencies(config.Default(), log.Default(), fake, fake, &fakeMounter{})
@@ -400,6 +425,65 @@ func TestCandidateBlockDevicesIgnoresUnsafeDevices(t *testing.T) {
 		expected := filepath.Join(devRoot, "sdd")
 		if len(candidates) != 1 || candidates[0] != expected {
 			t.Fatalf("expected only safe candidate %q, got %#v", expected, candidates)
+		}
+	})
+}
+
+func TestClassifyBlockDevicesSeparatesFormattedDisks(t *testing.T) {
+	withFakeDeviceTree(t, []fakeBlockDevice{
+		{name: "sdb", sizeGiB: 14},
+		{name: "sdc", sizeGiB: 14, formatted: true},
+	}, "", func(devRoot string) {
+		unformatted, formatted, err := classifyBlockDevices(context.Background(), 14)
+		if err != nil {
+			t.Fatalf("classifyBlockDevices returned error: %v", err)
+		}
+		if len(unformatted) != 1 || unformatted[0] != filepath.Join(devRoot, "sdb") {
+			t.Fatalf("expected only blank disk sdb to be unformatted, got %#v", unformatted)
+		}
+		if len(formatted) != 1 || formatted[0] != filepath.Join(devRoot, "sdc") {
+			t.Fatalf("expected only sdc to be formatted, got %#v", formatted)
+		}
+	})
+}
+
+func TestDiscoverDevicePathPrefersBlankDiskOverFormatted(t *testing.T) {
+	withFakeDeviceTree(t, []fakeBlockDevice{
+		{name: "sdb", sizeGiB: 14, formatted: true},
+		{name: "sdc", sizeGiB: 14},
+	}, "", func(devRoot string) {
+		path, err := realMounter{}.DiscoverDevicePath(context.Background(), 14)
+		if err != nil {
+			t.Fatalf("DiscoverDevicePath returned error: %v", err)
+		}
+		if expected := filepath.Join(devRoot, "sdc"); path != expected {
+			t.Fatalf("expected fresh blank disk %q, got %q", expected, path)
+		}
+	})
+}
+
+func TestDiscoverDevicePathFallsBackToFormattedDiskOnReattach(t *testing.T) {
+	withFakeDeviceTree(t, []fakeBlockDevice{
+		{name: "sdb", sizeGiB: 14, formatted: true},
+		{name: "sdc", sizeGiB: 10, formatted: true},
+	}, "", func(devRoot string) {
+		path, err := realMounter{}.DiscoverDevicePath(context.Background(), 14)
+		if err != nil {
+			t.Fatalf("DiscoverDevicePath returned error: %v", err)
+		}
+		if expected := filepath.Join(devRoot, "sdb"); path != expected {
+			t.Fatalf("expected re-attached formatted disk %q, got %q", expected, path)
+		}
+	})
+}
+
+func TestDiscoverDevicePathRejectsAmbiguousFormattedReattach(t *testing.T) {
+	withFakeDeviceTree(t, []fakeBlockDevice{
+		{name: "sdb", sizeGiB: 14, formatted: true},
+		{name: "sdc", sizeGiB: 14, formatted: true},
+	}, "", func(string) {
+		if _, err := (realMounter{}).DiscoverDevicePath(context.Background(), 14); err == nil {
+			t.Fatal("expected ambiguous formatted re-attach candidates to fail")
 		}
 	})
 }
